@@ -1,0 +1,1156 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---- Defaults ---------------------------------------------------------------
+BUILD_QCS615="${BUILD_QCS615:-true}"
+BUILD_QCM6490="${BUILD_QCM6490:-true}"
+BUILD_QCS8300="${BUILD_QCS8300:-true}"
+BUILD_QCS9100="${BUILD_QCS9100:-true}"
+BUILD_RB1="${BUILD_RB1:-false}"
+U_BOOT_RB1="${U_BOOT_RB1:-}"        # path to u-boot (copied as boot.img for RB1)
+TARGET_BOARDS="${TARGET_BOARDS:-all}"
+
+# Verbosity and safety
+VERBOSE="${VERBOSE:-false}"
+ALLOW_MISSING_SHA="${ALLOW_MISSING_SHA:-false}"
+
+ESP_VFAT="${ESP_VFAT:-}"
+ROOTFS_EXT4="${ROOTFS_EXT4:-}"
+
+DTBS_TAR="${DTBS_TAR:-$PWD/linux/build/out/dtbs.tar.gz}"
+DTB_BIN="${DTB_BIN:-}"                  #optional override from fit_build.py
+VMLINUX_SRC="${VMLINUX_SRC:-}"        #optional override to a real kernel vmlinux file
+
+ROOTDIR="${ROOTDIR:-$PWD/work}"
+ARTIFACTDIR="${ARTIFACTDIR:-$PWD/build/out}"
+DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
+
+QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/6c9922f220c884236303a94075eb7c62e0120af0.tar.gz"
+QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
+
+# VFAT sizing knobs (KiB)
+# Use 4096-byte sectors to match UFS 4K sector size (same as qcom-deb-images).
+# Minimum 4096 KiB (4 MiB) matches the fixed size used by qcom-deb-images and
+# comfortably fits in the 64 MiB dtb_a/dtb_b partitions provisioned by ptool.
+VFAT_MIN_KIB="${VFAT_MIN_KIB:-4096}"          # minimum image size (KiB)
+VFAT_SECTOR_SIZE="${VFAT_SECTOR_SIZE:-4096}"   # sector size for mkfs.vfat -S (UFS = 4096)
+
+usage() {
+        cat <<EOF
+Usage:
+  ./scripts/generate_flat_build.sh [OPTIONS]
+Build selection:
+  --build-qcs615=(true|false)       default: true
+  --build-qcm6490=(true|false)      default: true
+  --build-qcs8300=(true|false)      default: true
+  --build-qcs9100=(true|false)      default: true
+  --build-rb1=(true|false)          default: false
+  --u-boot-rb1=<path>               enables RB1 and copies as boot.img
+Inputs:
+  --target-boards=<list|all>        default: all
+                                    e.g. "qcs6490-rb3gen2-vision-kit,monaco-evk"
+Optional flat images (filenames are rewired to match their basenames):
+  --esp-vfat=<path/to/efi.bin>
+  --rootfs-ext4=<path/to/rootfs.img>
+DTB handling:
+  --dtbs-tar=<path/to/dtbs.tar.gz>  default: "$PWD/linux/build/out/dtbs.tar.gz"
+  --dtb-bin=<path/to/dtb.bin>      optional; if provided, use dtb.bin directly and skip dtbs.tar.gz
+                                     precedence: DTB_BIN overrides DTBS_TAR mode
+Kernel artifact:
+  VMLINUX_SRC=<path/to/vmlinux>    optional; use a known-good kernel ELF instead of rootfs extraction
+Logging and safety:
+  --verbose=(true|false)            default: false
+  --allow-missing-sha=(true|false)  default: false (ERROR if SHA256 is missing)
+VFAT options (advanced):
+  VFAT_MIN_KIB                      default: $VFAT_MIN_KIB
+  VFAT_SECTOR_SIZE                  default: $VFAT_SECTOR_SIZE
+Outputs:
+   \$ARTIFACTDIR/flash_<board>_<ufs|emmc>/
+EOF
+}
+
+# ---- Parse CLI --------------------------------------------------------------
+for arg in "$@"; do
+        case "$arg" in
+                --build-qcs615=*)       BUILD_QCS615="${arg#*=}";;
+                --build-qcm6490=*)      BUILD_QCM6490="${arg#*=}";;
+                --build-qcs8300=*)      BUILD_QCS8300="${arg#*=}";;
+                --build-qcs9100=*)      BUILD_QCS9100="${arg#*=}";;
+                --build-rb1=*)          BUILD_RB1="${arg#*=}";;
+                --u-boot-rb1=*)         U_BOOT_RB1="${arg#*=}"; BUILD_RB1="true";;
+
+                --target-boards=*)      TARGET_BOARDS="${arg#*=}";;
+
+                --esp-vfat=*)           ESP_VFAT="${arg#*=}";;
+                --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
+
+                --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
+                --dtb-bin=*)            DTB_BIN="${arg#*=}";;
+
+                --verbose=*)            VERBOSE="${arg#*=}";;
+                --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
+
+                -h|--help) usage; exit 0;;
+                *) echo "Unknown option: $arg" >&2; usage; exit 1;;
+        esac
+done
+
+# ---- Helpers: deps & utils ---------------------------------------------------
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
+need curl; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3
+
+normalize_bool() {
+        local v
+        v="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+        case "$v" in
+                1|true|yes|y)    echo "true" ;;
+                0|false|no|n|'') echo "false" ;;
+                *)               echo "INVALID" ;;
+        esac
+}
+
+log_debug() {
+        local msg="${1:-}"
+        [[ "$VERBOSE" == "true" ]] && echo "$msg" >&2
+}
+
+# Print verbose debug lines to stderr (so command substitutions are not polluted)
+dbg() {
+        [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2
+}
+
+# Normalize boolean flags
+for _b in BUILD_QCS615 BUILD_QCM6490 BUILD_QCS8300 BUILD_QCS9100 BUILD_RB1 VERBOSE ALLOW_MISSING_SHA; do
+        val=$(normalize_bool "${!_b}")
+        if [[ "$val" == "INVALID" ]]; then
+                echo "Invalid boolean for $_b: ${!_b}. Use true/false (or 1/0/yes/no)." >&2
+                exit 1
+        fi
+        printf -v "$_b" '%s' "$val"
+done
+
+mkdir -p "$ROOTDIR" "$ARTIFACTDIR" "$DOWNLOADDIR"
+
+BUILD_DIR="${ROOTDIR}/build.$$"
+rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
+cleanup() {
+        [[ -d "$ROOTDIR" && "$ROOTDIR" == "$PWD"/work ]] && rm -rf "$ROOTDIR"
+}
+trap cleanup EXIT
+
+# mtools: avoid geometry prompts
+export MTOOLS_SKIP_CHECK=1
+
+# ---- Board registry ----------------------------------------------------------
+declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB
+declare -a BOOT_DESC BOOT_URL BOOT_FILENAME BOOT_SHA
+declare -a CDT_DESC CDT_URL CDT_FILENAME CDT_SHA CDT_BOARD_FILE
+declare -a BOARD_UBOOT_FILE
+BOARD_COUNT=0
+
+add_board() {
+        local name="$1" platforms="$2" dtb="$3"
+        local boot_desc="$4" boot_url="$5" boot_filename="$6" boot_sha="$7"
+        local cdt_desc="$8" cdt_url="${9}" cdt_filename="${10}" cdt_sha="${11}" cdt_board_file="${12}"
+        local uboot_file="${13:-}"
+
+        BOARD_NAME[BOARD_COUNT]="$name"
+        BOARD_PLATFORMS[BOARD_COUNT]="$platforms"
+        BOARD_DTB[BOARD_COUNT]="$dtb"
+
+        BOOT_DESC[BOARD_COUNT]="$boot_desc"
+        BOOT_URL[BOARD_COUNT]="$boot_url"
+        BOOT_FILENAME[BOARD_COUNT]="$boot_filename"
+        BOOT_SHA[BOARD_COUNT]="$boot_sha"
+
+        CDT_DESC[BOARD_COUNT]="$cdt_desc"
+        CDT_URL[BOARD_COUNT]="$cdt_url"
+        CDT_FILENAME[BOARD_COUNT]="$cdt_filename"
+        CDT_SHA[BOARD_COUNT]="$cdt_sha"
+        CDT_BOARD_FILE[BOARD_COUNT]="$cdt_board_file"
+
+        BOARD_UBOOT_FILE[BOARD_COUNT]="$uboot_file"
+        ((++BOARD_COUNT))
+}
+
+# ---- Populate boards (aligned to YAML) --------------------------------------
+if [[ "$BUILD_QCS615" == "true" ]]; then
+        add_board \
+                "qcs615-ride" "qcs615-ride/ufs" "qcom/qcs615-ride.dtb" \
+                "QCS615 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS615.LE.1.0/common/build/common/bin/QCS615_bootbinaries.zip" \
+                "qcs615_boot-binaries.zip" \
+                "6730c26235880f469075acb62115c9e1e566979d1bf12f4a4c4ecf590c1d357e" \
+                "QCS615 Ride CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS615/cdt/ADP_AIR_SA6155P_V2.zip" \
+                "qcs615-ride_cdt.zip" \
+                "37d99eb113e286400bce0d70aa12a74d05f93d01f045bf67e7a46b3c606c8fd0" \
+                "cdt_adp_air_sa6155p.bin" \
+                ""
+fi
+
+if [[ "$BUILD_QCM6490" == "true" ]]; then
+        add_board \
+                "qcs6490-rb3gen2-vision-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
+                "QCM6490 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+                "qcm6490_boot-binaries.zip" \
+                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+                "RB3 Gen2 Vision Kit CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip" \
+                "qcs6490-rb3gen2-vision-kit_cdt.zip" \
+                "a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c" \
+                "cdt_vision_kit.bin" \
+                ""
+
+        add_board \
+                "qcs6490-rb3gen2-core-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
+                "QCM6490 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+                "qcm6490_boot-binaries.zip" \
+                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+                "RB3 Gen2 Core Kit CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip" \
+                "qcs6490-rb3gen2-core-kit_cdt.zip" \
+                "0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e" \
+                "cdt_core_kit.bin" \
+                ""
+
+        add_board \
+                "qcs6490-rb3gen2-industrial-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
+                "QCM6490 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+                "qcm6490_boot-binaries.zip" \
+                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+                "RB3 Gen2 Industrial Kit CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-kit.zip" \
+                "qcs6490-rb3gen2-industrial-kit_cdt.zip" \
+                "6cf70a1b9eb0ff27176bb77c679d519f58fbad2cdf2fd7bec1e305c1bf52c013" \
+                "cdt_industrial_kit.bin" \
+                ""
+
+        add_board \
+                "qcm6490-idp" "qcm6490-idp/ufs" "qcom/qcm6490-idp.dtb" \
+                "QCM6490 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+                "qcm6490_boot-binaries.zip" \
+                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+                "QCM6490 IDP CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/qcm6490-idp.zip" \
+                "qcm6490-idp_cdt.zip" \
+                "32226891c51fe6f2bf8def4be66e614bf2994bffaf0dac343b9baa05f7829e11" \
+                "cdt_kodiak_idp_0.1.0.bin" \
+                ""
+fi
+
+if [[ "$BUILD_QCS8300" == "true" ]]; then
+        add_board \
+                "qcs8300-ride" "qcs8300-ride-sx/ufs" "qcom/qcs8300-ride.dtb" \
+                "QCS8300 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS8300.LE.1.0/common/build/ufs/bin/QCS8300_bootbinaries.zip" \
+                "qcs8300_boot-binaries.zip" \
+                "e07ed2b58c639373e22c289873f1059a4ba48cfe41bd9ae2f9651884177b60c9" \
+                "QCS8300 Ride SX EVK CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS8300/cdt/ride-sx.zip" \
+                "qcs8300-ride-sx_cdt.zip" \
+                "d7fc667372b28383a36d586333097d84b9d9c104f4dd1845d33904e2d6b39f80" \
+                "cdt_ride_sx.bin" \
+                ""
+
+        add_board \
+                "monaco-evk" "iq-8275-evk/emmc iq-8275-evk/ufs" "qcom/monaco-evk.dtb" \
+                "QCS8300 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS8300.LE.1.0/common/build/ufs/bin/QCS8300_bootbinaries.zip" \
+                "qcs8300_boot-binaries.zip" \
+                "e07ed2b58c639373e22c289873f1059a4ba48cfe41bd9ae2f9651884177b60c9" \
+                "IQ-8275 EVK CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS8300/cdt/qcs8275-iq-8275-evk-pro-sku.zip" \
+                "qcs8275-iq-8275-evk-pro-sku.zip" \
+                "cbe2009c8ef7dbacd716141bf01b8e1b26788c4a4f3145e60fe3b4a6b3aabc04" \
+                "cdt_qcs8275_iq_8275_evk_pro_sku.bin" \
+                ""
+
+        add_board \
+                "monaco-arduino-monza" "qcs8275-monza/emmc" "qcom/monaco-arduino-monza.dtb" \
+                "QCS8300 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS8300.LE.1.0/common/build/ufs/bin/QCS8300_bootbinaries.zip" \
+                "qcs8300_boot-binaries.zip" \
+                "e07ed2b58c639373e22c289873f1059a4ba48cfe41bd9ae2f9651884177b60c9" \
+                "Monza CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS8300/cdt/qcs8275-Monza_v1.zip" \
+                "qcs8275-monza.zip" \
+                "8484beb2ac1ff74a129c586f6d5331536765975dbabfb0600509f11010ec1c41" \
+                "cdt_qcs8275-Monza.bin" \
+                ""
+fi
+
+if [[ "$BUILD_QCS9100" == "true" ]]; then
+        add_board \
+                "qcs9100-ride-r3" "qcs9100-ride-sx/ufs" "qcom/qcs9100-ride-r3.dtb" \
+                "QCS9100 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS9100.LE.1.0/common/build/ufs/bin/QCS9100_bootbinaries.zip" \
+                "qcs9100_boot-binaries.zip" \
+                "df1b928a25f428f4c76a760be8a094104cec75cd5a6f758d9e3c62ad9be71c0c" \
+                "QCS9100 Ride Rev3 EVK CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS9100/cdt/ride-sx_v3.zip" \
+                "qcs9100-ride-sx-v3_cdt.zip" \
+                "377a8405899ac82199deaf70bca3648c15b924a3fcef8f109555e661ed70f4b9" \
+                "cdt_ride_sx.bin" \
+                ""
+
+        add_board \
+                "lemans-evk" "iq-9075-evk/ufs" "qcom/lemans-evk.dtb" \
+                "QCS9100 boot binaries" \
+                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS9100.LE.1.0/common/build/ufs/bin/QCS9100_bootbinaries.zip" \
+                "qcs9100_boot-binaries.zip" \
+                "df1b928a25f428f4c76a760be8a094104cec75cd5a6f758d9e3c62ad9be71c0c" \
+                "QCS9100 RB8 Core Kit CDT" \
+                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS9100/cdt/rb8_core_kit.zip" \
+                "qcs9100-rb8-core-kit_cdt.zip" \
+                "a252244f800d7c9e15883e12935af4113f9f2ecba6490e46cd9b943169f15bfa" \
+                "cdt_rb8_core_kit.bin" \
+                ""
+fi
+
+if [[ "$BUILD_RB1" == "true" ]]; then
+        add_board \
+                "qrb2210-rb1" "qrb2210-rb1/emmc" "qcom/qrb2210-rb1.dtb" \
+                "RB1 rescue image" \
+                "https://artifacts.codelinaro.org/artifactory/clo-549-96boards-backup/96boards/rb1/linaro/rescue/23.12/rb1-bootloader-emmc-linux-47528.zip" \
+                "qrb2210-rb1_rescue-image.zip" \
+                "c75b6c63eb24c8ca36dad08ba4d4e93f3f4cd7dce60cf1b6dfb5790dc181cc3d" \
+                "" "" "" "" "" \
+                "$U_BOOT_RB1"
+fi
+
+add_board \
+        "qrb2210-arduino-imola" "qrb2210-unoq/emmc-16GB" "qcom/qrb2210-arduino-imola.dtb" \
+        "UNO Q boot binaries" \
+        "https://downloads.arduino.cc/debian-im/unoq-bootloader-emmc-linux-251020.zip" \
+        "qrb2210-arduino-imola_boot-binaries.zip" \
+        "c606e95d0107f8c58d0dd9494e00624d1db7c4361cca20513bc78ef02ca28dd1" \
+        "" "" "" "" "" ""
+
+# ---- Utilities ---------------------------------------------------------------
+download_if_needed() {
+        local url="$1" out="$2"
+        if [[ -f "$out" ]]; then
+                log_debug "Already present: $out"
+                return 0
+        fi
+        echo "Downloading: $url" >&2
+        mkdir -p "$(dirname "$out")"
+        local tmp="${out}.tmp.$$"; rm -f "$tmp"
+        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 15 --max-time 1200 -o "$tmp" "$url"
+        mv -f "$tmp" "$out"
+}
+
+verify_sha256() {
+        echo "${1}  ${2}" | sha256sum --strict -c -;
+}
+
+unpack_zip_smart() {
+        local zipfile="$1" destdir="$2"
+        rm -rf "$destdir"; mkdir -p "$destdir"
+        local tmpdir="${BUILD_DIR}/tmp_unzip_$$"
+        rm -rf "$tmpdir"
+        mkdir -p "$tmpdir"
+
+        unzip -o "$zipfile" -d "$tmpdir" >/dev/null
+        local top_count; top_count="$(find "$tmpdir" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+        if [[ "$top_count" == "1" ]] && [[ -d "$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]]; then
+                local top; top="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+                shopt -s dotglob nullglob; mv "$top"/* "$destdir"/ 2>/dev/null || true; shopt -u dotglob nullglob
+        else
+                shopt -s dotglob nullglob; mv "$tmpdir"/* "$destdir"/ 2>/dev/null || true; shopt -u dotglob nullglob
+        fi
+        rm -rf "$tmpdir"
+}
+
+ensure_qcom_ptool() {
+        download_if_needed "$QCOM_PTOOL_URL" "$QCOM_PTOOL_TARBALL"
+        local dest="$DOWNLOADDIR/qcom-ptool"
+        local sha_file="$dest/.ptool.sha256"
+        mkdir -p "$dest"
+        local cur_sha
+        cur_sha="$(sha256sum "$QCOM_PTOOL_TARBALL" | awk '{print $1}')"
+        if [[ -f "$sha_file" ]] && [[ "$(cat "$sha_file")" == "$cur_sha" ]] && [[ -f "$dest/gen_partition.py" ]]; then
+                echo "$dest" # cache valid, reuse
+                return 0
+        fi
+        rm -rf "$dest"; mkdir -p "$dest"
+        tar -xzf "$QCOM_PTOOL_TARBALL" --strip-components=1 -C "$dest"
+        [[ -f "$dest/gen_partition.py" ]] || { echo "qcom-ptool unpack failed (gen_partition.py missing)" >&2; exit 3; }
+        echo "$cur_sha" > "$sha_file"
+        echo "$dest"  # ONLY return value on stdout
+}
+
+resolve_maybe_relative_to_artifactdir() {
+        local p="$1"
+        [[ -n "$p" ]] || return 0
+        if [[ -f "$p" ]]; then
+                printf '%s\n' "$p"
+                return 0
+        fi
+        if [[ -n "$ARTIFACTDIR" && -f "$ARTIFACTDIR/$p" ]]; then
+                printf '%s\n' "$ARTIFACTDIR/$p"
+                return 0
+        fi
+        return 1
+}
+
+copy_boot_binaries_filtered() {
+        local srcdir="$1" destdir="$2"
+        find "$srcdir" -type f \
+                -not -name 'gpt_*' \
+                -not -name 'patch*.xml' \
+                -not -name 'rawprogram*.xml' \
+                -not -name 'wipe*.xml' \
+                -not -name 'zeros_*' \
+                \( -name 'LICENSE' -o -name 'Qualcomm-Technologies-Inc.-Proprietary' -o -name 'prog_*' -o -name 'boot.img' -o -name '*.bin' -o -name '*.elf' -o -name '*.fv' -o -name '*.mbn' \) \
+                -exec cp --preserve=mode,timestamps -v '{}' "$destdir" \;
+}
+
+# Suggest DTB candidates when not found
+suggest_dtb_candidates() {
+        local want="$1" list="$2"
+        local base dir
+        base="$(basename "$want")"
+        dir="$(dirname "$want")"
+        echo "  Candidates with same basename:"
+        awk -F/ -v b="$base" '$NF==b {print "    - "$0}' "$list" || true
+        if [[ "$dir" != "." ]]; then
+                echo "  Entries with similar prefix ($dir):"
+                grep -F "$dir" "$list" | sed 's/^/    - /' | head -n 10 || true
+        fi
+}
+
+# Resolve DTB path: exact match or unique basename match (returns path or empty)
+resolve_dtb_path() {
+        local want="$1" list="$2"
+        local exact; exact="$(grep -Fx -- "$want" "$list" || true)"
+        if [[ -n "$exact" ]]; then echo "$want"; return 0; fi
+        local base; base="$(basename "$want")"
+        mapfile -t matches < <(awk -F/ -v b="$base" '$NF==b {print}' "$list")
+        if [[ "${#matches[@]}" -eq 1 ]]; then echo "${matches[0]}"; return 0; fi
+        echo ""
+}
+
+# Compute VFAT image size (KiB) for a DTB with headroom
+compute_fat_size_kib() {
+        local dtb_file="$1"
+        local size_bytes
+        size_bytes="$(stat -c '%s' "$dtb_file" 2>/dev/null || echo 0)"
+        local headroom=$((512 * 1024))        # +512 KiB
+        local total=$((size_bytes + headroom))
+        local kib=$(( (total + 1023) / 1024 ))
+        if (( kib < VFAT_MIN_KIB )); then kib="$VFAT_MIN_KIB"; fi
+        echo "$kib"
+}
+
+# Resolve a known-good kernel vmlinux from the build tree or an override path
+resolve_kernel_vmlinux_source() {
+        local -a candidates=()
+        local src
+
+        if [[ -n "$VMLINUX_SRC" ]]; then
+                if [[ -d "$VMLINUX_SRC" ]]; then
+                        candidates+=("$VMLINUX_SRC/vmlinux" "$VMLINUX_SRC/vmlinux.unstripped")
+                else
+                        candidates+=("$VMLINUX_SRC")
+                fi
+        fi
+
+        candidates+=(
+                "$PWD/linux/vmlinux"
+                "$PWD/linux/vmlinux.unstripped"
+                "$PWD/linux/build/vmlinux"
+                "$PWD/linux/build/vmlinux.unstripped"
+        )
+
+        for src in "${candidates[@]}"; do
+                [[ -f "$src" ]] || continue
+                # Prefer ELF images; skip compressed images that merely happen to be named vmlinux
+                if command -v file >/dev/null 2>&1; then
+                        if file -b "$src" 2>/dev/null | grep -qiE '^ELF '; then
+                                echo "$src"
+                                return 0
+                        fi
+                else
+                        echo "$src"
+                        return 0
+                fi
+        done
+
+        return 1
+}
+# Copy a real kernel vmlinux into the flash directory if available
+copy_kernel_vmlinux_artifact() {
+        local out_dir="$1"
+        local dst="$out_dir/vmlinux"
+        local src=""
+
+        if src="$(resolve_kernel_vmlinux_source)"; then
+                echo "Using kernel tree vmlinux: $src" >&2
+                cp --preserve=mode,timestamps -v "$src" "$dst"
+                return 0
+        fi
+
+        return 1
+}
+
+# Extract vmlinux from a mounted rootfs; fallback to copying vmlinuz if extract-vmlinux is unavailable
+extract_kernel_from_mounted_rootfs() {
+        local mnt="$1" out_dir="$2"
+        local dst="$out_dir/vmlinux"
+
+        # Prefer debug vmlinux
+        local src=""
+        src="$(find "$mnt/usr/lib/debug/lib/modules" -type f -name 'vmlinux' -print -quit 2>/dev/null || true)"
+        if [[ -z "$src" ]]; then
+                src="$(find "$mnt/usr/lib/modules" -maxdepth 2 -type f -name 'vmlinux' -print -quit 2>/dev/null || true)"
+        fi
+        if [[ -n "$src" ]]; then
+                echo "Copying vmlinux from $src" >&2
+                cp --preserve=mode,timestamps -v "$src" "$dst"
+                return 0
+        fi
+
+        # Try /boot/vmlinux* first
+        src="$(find "$mnt/boot" -type f -name 'vmlinux*' -print -quit 2>/dev/null || true)"
+        if [[ -n "$src" ]]; then
+                echo "Copying vmlinux from $src" >&2
+                cp --preserve=mode,timestamps -v "$src" "$dst"
+                return 0
+        fi
+
+        # Fallback: /boot/vmlinuz* + extract-vmlinux
+        src="$(find "$mnt/boot" -type f -name 'vmlinuz*' -print -quit 2>/dev/null || true)"
+        if [[ -n "$src" ]]; then
+                if command -v extract-vmlinux >/dev/null 2>&1; then
+                        echo "Extracting vmlinux from $src using extract-vmlinux" >&2
+                        extract-vmlinux "$src" > "$dst"
+                        return 0
+                else
+                        echo "WARNING: extract-vmlinux not found; copying compressed vmlinuz as vmlinux" >&2
+                        cp --preserve=mode,timestamps -v "$src" "$dst"
+                        return 0
+                fi
+        fi
+
+        echo "WARNING: Kernel image not found in rootfs (vmlinux/vmlinuz); skipping vmlinux artifact" >&2
+        return 1
+}
+
+# Extract vmlinux/vmlinuz from an ext4 image without root using e2tools or debugfs
+extract_kernel_from_ext4_image() {
+        local img="$1" out_dir="$2"
+        local dst="$out_dir/vmlinux"
+
+        # Try e2tools first (non-root)
+        if command -v e2ls >/dev/null 2>&1 && command -v e2cp >/dev/null 2>&1; then
+                local boot_list name tmp
+                boot_list="$(e2ls "${img}":/boot 2>/dev/null || true)"
+                name="$(printf '%s\n' "$boot_list" | awk '{print $NF}' | grep -E '^vmlinux(-.*)?$' | head -n1 || true)"
+                if [[ -n "$name" ]]; then
+                        echo "e2tools: copying /boot/$name -> $dst" >&2
+                        e2cp -p "${img}":/boot/"$name" "$dst"
+                        return 0
+                fi
+                name="$(printf '%s\n' "$boot_list" | awk '{print $NF}' | grep -E '^vmlinuz(-.*)?$' | head -n1 || true)"
+                if [[ -n "$name" ]]; then
+                        tmp="${BUILD_DIR}/vmlinuz.$$"
+                        echo "e2tools: copying /boot/$name -> $tmp" >&2
+                        e2cp -p "${img}":/boot/"$name" "$tmp"
+                        if command -v extract-vmlinux >/dev/null 2>&1; then
+                                echo "e2tools: extracting vmlinux using extract-vmlinux" >&2
+                                extract-vmlinux "$tmp" > "$dst"
+                        else
+                                echo "e2tools: extract-vmlinux not found; copying compressed vmlinuz as vmlinux" >&2
+                                cp --preserve=mode,timestamps -v "$tmp" "$dst"
+                        fi
+                        rm -f "$tmp"
+                        return 0
+                fi
+        fi
+
+        # Fallback to debugfs (non-root)
+        if command -v debugfs >/dev/null 2>&1; then
+                local boot_list name tmp
+                boot_list="$(debugfs -R "ls -p /boot" "$img" 2>/dev/null | awk '{print $NF}' | tr -d '\r' || true)"
+                name="$(printf '%s\n' "$boot_list" | grep -E '^vmlinux(-.*)?$' | head -n1 || true)"
+                if [[ -n "$name" ]]; then
+                        echo "debugfs: dumping /boot/$name -> $dst" >&2
+                        debugfs -R "dump -p /boot/$name $dst" "$img" >/dev/null 2>&1 && return 0
+                fi
+                name="$(printf '%s\n' "$boot_list" | grep -E '^vmlinuz(-.*)?$' | head -n1 || true)"
+                if [[ -n "$name" ]]; then
+                        tmp="${BUILD_DIR}/vmlinuz.$$"
+                        echo "debugfs: dumping /boot/$name -> $tmp" >&2
+                        if debugfs -R "dump -p /boot/$name $tmp" "$img" >/dev/null 2>&1; then
+                                if command -v extract-vmlinux >/dev/null 2>&1; then
+                                        echo "debugfs: extracting vmlinux using extract-vmlinux" >&2
+                                        extract-vmlinux "$tmp" > "$dst"
+                                else
+                                        echo "debugfs: extract-vmlinux not found; copying compressed vmlinuz as vmlinux" >&2
+                                        cp --preserve=mode,timestamps -v "$tmp" "$dst"
+                                fi
+                                rm -f "$tmp"
+                                return 0
+                        fi
+                fi
+        fi
+
+        return 1
+}
+
+# Generate ptool outputs for a platform using gen_partition.py -m partition map.
+# This matches the approach used by qcom-deb-images/scripts/gen-ptool.sh.
+generate_ptool_from_platform() {
+        local platform_dir="$1" qcom_ptool="$2" cdt_board_file="$3"
+        local esp_basename="${4:-}" rootfs_basename="${5:-}" dtb_basename="${6:-}"
+        local conf="${qcom_ptool}/platforms/${platform_dir}/partitions.conf"
+        local contents="${qcom_ptool}/platforms/${platform_dir}/contents.xml.in"
+        log_debug "conf=$conf"
+        log_debug "contents=$contents"
+        [[ -f "$conf" ]] || { echo "Missing partitions.conf: $conf" >&2; exit 4; }
+
+        mkdir -p "${BUILD_DIR}/ptool/${platform_dir}"
+        pushd "${BUILD_DIR}/ptool/${platform_dir}" >/dev/null
+
+        [[ -n "$dtb_basename" ]] && dtb_basename="$(basename "$dtb_basename")"
+
+        # Extract disk type from partitions.conf --disk line
+        local disk_type
+        disk_type="$(sed -n 's/.*--type=\([^ ]*\).*/\1/p' "$conf" | head -n1)"
+        [[ -n "$disk_type" ]] || { echo "Could not parse disk type from: $conf" >&2; exit 5; }
+
+        local esp_ref="" rootfs_ref=""
+        case "$disk_type" in
+                emmc|nvme) esp_ref="../disk-sdcard.img1"; rootfs_ref="../disk-sdcard.img2" ;;
+                ufs)       esp_ref="../disk-ufs.img1";    rootfs_ref="../disk-ufs.img2" ;;
+                *) echo "Unsupported disk type: $disk_type (platform: $platform_dir)" >&2; exit 6 ;;
+        esac
+        [[ -n "$esp_basename"    ]] && esp_ref="$esp_basename"
+        [[ -n "$rootfs_basename" ]] && rootfs_ref="$rootfs_basename"
+
+        echo "$disk_type" > disk_type
+        dbg "[ptool:$platform_dir] disk_type=$disk_type esp_ref=$esp_ref rootfs_ref=$rootfs_ref"
+
+        # Build partition map for gen_partition.py -m flag.
+        # Format: "name1=file1,name2=file2,..."  (same as qcom-deb-images gen-ptool.sh)
+        local cdt_base=""
+        [[ -n "$cdt_board_file" ]] && cdt_base="$(basename "$cdt_board_file")"
+
+        local partition_map=""
+        [[ -n "$cdt_base"     ]] && partition_map="${partition_map:+${partition_map},}cdt=${cdt_base}"
+        [[ -n "$dtb_basename" ]] && partition_map="${partition_map:+${partition_map},}dtb_a=${dtb_basename},dtb_b=${dtb_basename}"
+        [[ -n "$esp_ref"      ]] && partition_map="${partition_map:+${partition_map},}efi=${esp_ref}"
+        [[ -n "$rootfs_ref"   ]] && partition_map="${partition_map:+${partition_map},}rootfs=${rootfs_ref}"
+
+        dbg "[ptool:$platform_dir] partition_map=${partition_map:-<empty>}"
+
+        python3 "${qcom_ptool}/gen_partition.py" -i "$conf" -o partitions.xml \
+                ${partition_map:+-m "$partition_map"}
+        [[ -e "$contents" ]] && python3 "${qcom_ptool}/gen_contents.py" \
+                -p partitions.xml -t "$contents" -o contents.xml
+        python3 "${qcom_ptool}/ptool.py" -x partitions.xml
+
+        popd >/dev/null
+}
+
+# Build targets file from --target-boards (all or CSV)
+build_targets_set() {
+        local targets_file="$1"; rm -f "$targets_file"; mkdir -p "$(dirname "$targets_file")"
+        if [[ "$TARGET_BOARDS" == "all" ]]; then
+                : >"$targets_file"
+                for ((i=0; i<BOARD_COUNT; i++)); do echo "${BOARD_NAME[i]}" >>"$targets_file"; done
+        else
+                echo "$TARGET_BOARDS" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | sort -u >"$targets_file"
+        fi
+}
+
+validate_targets_exist() {
+        local targets_file="$1"
+        [[ "$TARGET_BOARDS" == "all" ]] && return 0
+        local unknown=0
+        while IFS= read -r t || [[ -n "${t:-}" ]]; do
+                local found="false"
+                for ((i=0; i<BOARD_COUNT; i++)); do
+                        if [[ "$t" == "${BOARD_NAME[i]}" ]]; then
+                                found="true"; break
+                        fi
+                done
+                if [[ "$found" == "false" ]]; then
+                        echo "ERROR: Unknown board in --target-boards: '$t'" >&2
+                        unknown=1
+                fi
+        done < "$targets_file"
+        if (( unknown )); then
+                echo "Hint: known boards are:" >&2
+                for ((i=0; i<BOARD_COUNT; i++)); do echo "  - ${BOARD_NAME[i]}" >&2; done
+                exit 12
+        fi
+}
+
+# ---- Build targets & gate downloads -----------------------------------------
+TARGETS_FILE="${BUILD_DIR}/targets.txt"
+build_targets_set "$TARGETS_FILE"
+validate_targets_exist "$TARGETS_FILE"
+
+# ---- Resolve inputs / downloads ---------------------------------------------
+if [[ "$BUILD_RB1" == "true" && -z "$U_BOOT_RB1" ]]; then
+        echo "ERROR: --u-boot-rb1 is required when --build-rb1=true" >&2
+        exit 13
+fi
+
+if [[ -n "$ESP_VFAT" ]]; then
+        ESP_VFAT="$(resolve_maybe_relative_to_artifactdir "$ESP_VFAT")" || {
+                echo "ERROR: --esp-vfat not found: $ESP_VFAT" >&2
+                exit 8
+        }
+fi
+
+if [[ -n "$ROOTFS_EXT4" ]]; then
+        ROOTFS_EXT4="$(resolve_maybe_relative_to_artifactdir "$ROOTFS_EXT4")" || {
+                echo "ERROR: --rootfs-ext4 not found: $ROOTFS_EXT4" >&2
+                exit 9
+        }
+fi
+
+DTB_BIN_SRC=""
+if [[ -n "$DTB_BIN" ]]; then
+        DTB_BIN_SRC="$(resolve_maybe_relative_to_artifactdir "$DTB_BIN" 2>/dev/null || true)"
+        if [[ -z "$DTB_BIN_SRC" || ! -f "$DTB_BIN_SRC" ]]; then
+                echo "ERROR: DTB_BIN not found: $DTB_BIN" >&2
+                exit 1
+        fi
+        echo "Using prebuilt DTB payload: $DTB_BIN_SRC"
+else
+        if [[ -n "$DTBS_TAR" ]]; then
+                DTBS_TAR="$(resolve_maybe_relative_to_artifactdir "$DTBS_TAR")" || {
+                        echo "ERROR: --dtbs-tar not found: $DTBS_TAR" >&2
+                        exit 7
+                }
+        else
+                echo "ERROR: Either --dtb-bin or --dtbs-tar must be provided" >&2
+                exit 11
+        fi
+fi
+
+QCOM_PTOOL_DIR="$(ensure_qcom_ptool)"
+
+# Download ONLY for selected boards
+for ((i=0; i<BOARD_COUNT; i++)); do
+        name="${BOARD_NAME[i]}"
+
+        # Skip boards not in targets
+        if ! grep -Fxq "$name" "$TARGETS_FILE"; then
+                continue
+        fi
+
+        download_if_needed "${BOOT_URL[i]}" "$DOWNLOADDIR/${BOOT_FILENAME[i]}"
+        if [[ -n "${BOOT_SHA[i]}" ]]; then
+                verify_sha256 "${BOOT_SHA[i]}" "$DOWNLOADDIR/${BOOT_FILENAME[i]}"
+        else
+                if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
+                        echo "WARNING: No SHA256 provided for ${BOOT_FILENAME[i]} (continuing due to --allow-missing-sha=true)" >&2
+                else
+                        echo "ERROR: No SHA256 provided for ${BOOT_FILENAME[i]}" >&2
+                        exit 10
+                fi
+        fi
+
+        if [[ -n "${CDT_URL[i]}" ]]; then
+                download_if_needed "${CDT_URL[i]}" "$DOWNLOADDIR/${CDT_FILENAME[i]}"
+                if [[ -n "${CDT_SHA[i]}" ]]; then
+                        verify_sha256 "${CDT_SHA[i]}" "$DOWNLOADDIR/${CDT_FILENAME[i]}"
+                else
+                        if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
+                                echo "WARNING: No SHA256 provided for ${CDT_FILENAME[i]} (continuing due to --allow-missing-sha=true)" >&2
+                        else
+                                echo "ERROR: No SHA256 provided for ${CDT_FILENAME[i]}" >&2
+                                exit 10
+                        fi
+                fi
+        fi
+done
+
+DTBS_FILE="${BUILD_DIR}/dtbs.txt"; : >"$DTBS_FILE"
+# Build DTB listing only when operating in tar mode (no DTB_BIN provided)
+if [[ -z "$DTB_BIN" ]]; then
+        if [[ -f "$DTBS_TAR" ]]; then
+                tar -tzf "$DTBS_TAR" --wildcards '*.dtb' | sed 's#^\./##' | sort -u >"$DTBS_FILE"
+        else
+                echo "ERROR: dtbs.tar.gz not found at: $DTBS_TAR" >&2
+                exit 7
+        fi
+fi
+
+# Helper to create one or more DTB VFAT images
+create_fit_dtb_vfat_artifacts() {
+        local src_bin="$1"
+        local out_dir="$2"
+        local board_name="$3"
+
+        local -a vfat_names=()
+        local board_base=""
+
+        # Always create the generic multi-dtb image
+        vfat_names+=("dtb-multi-dtb-image.vfat")
+
+        # Add board-specific alias if needed
+        case "$board_name" in
+                *"-vision-kit")
+                        board_base="${board_name%-vision-kit}"
+                        vfat_names+=("dtb-${board_base}-image.vfat")
+                        ;;
+                *"-core-kit")
+                        board_base="${board_name%-core-kit}"
+                        vfat_names+=("dtb-${board_base}-image.vfat")
+                        ;;
+                *"-industrial-kit")
+                        board_base="${board_name%-industrial-kit}"
+                        vfat_names+=("dtb-${board_base}-image.vfat")
+                        ;;
+        esac
+
+        for vfat_name in "${vfat_names[@]}"; do
+                cp --preserve=mode,timestamps -f "$src_bin" "${out_dir}/${vfat_name}"
+        done
+
+        # Return primary VFAT name for ptool mapping
+        echo "${vfat_names[0]}"
+}
+
+# Legacy mode:
+# Extract the requested DTB from dtbs.tar.gz and package it as combined-dtb.dtb.
+create_legacy_dtb_vfat_from_tar() {
+        local dtb_path_in_tar="$1"
+        local out_vfat="$2"
+
+        local extract_dir="${BUILD_DIR}/dtbs_extract.$$"
+        rm -rf "$extract_dir"
+        mkdir -p "$extract_dir"
+
+        local dtb_src=""
+        if tar -C "$extract_dir" -xzf "$DTBS_TAR" "$dtb_path_in_tar" 2>/dev/null \
+           || tar -C "$extract_dir" -xzf "$DTBS_TAR" "./$dtb_path_in_tar" 2>/dev/null; then
+                if [[ -f "$extract_dir/$dtb_path_in_tar" ]]; then
+                        dtb_src="$extract_dir/$dtb_path_in_tar"
+                elif [[ -f "$extract_dir/$(basename "$dtb_path_in_tar")" ]]; then
+                        dtb_src="$extract_dir/$(basename "$dtb_path_in_tar")"
+                fi
+        fi
+
+        if [[ -z "$dtb_src" || ! -f "$dtb_src" ]]; then
+                echo "ERROR: Failed to extract DTB $dtb_path_in_tar from $DTBS_TAR" >&2
+                rm -rf "$extract_dir"
+                return 1
+        fi
+
+        local size_kib
+        size_kib="$(compute_fat_size_kib "$dtb_src")"
+
+        mkfs.vfat -S "$VFAT_SECTOR_SIZE" -C "$out_vfat" "$size_kib"
+        mcopy -vmp -i "$out_vfat" "$dtb_src" ::/combined-dtb.dtb
+
+        rm -rf "$extract_dir"
+}
+
+normalize_board_base() {
+    local board="$1"
+    case "$board" in
+        qcs6490-rb3gen2-vision-kit)    echo "qcs6490-rb3gen2" ;;
+        qcs6490-rb3gen2-core-kit)      echo "qcs6490-rb3gen2" ;;
+        qcs6490-rb3gen2-industrial-kit) echo "qcs6490-rb3gen2" ;;
+        *) echo "$board" ;;
+    esac
+}
+
+# ---- Build per-board/platform ------------------------------------------------
+declare -A BOARD_RESULT BOARD_REASON
+declare -A PLAT_RESULT PLAT_REASON   # key: "board/platform"
+
+for ((i=0; i<BOARD_COUNT; i++)); do
+    name="${BOARD_NAME[i]}"
+    platforms="${BOARD_PLATFORMS[i]}"
+    dtb="${BOARD_DTB[i]}"
+    cdt_board_file="${CDT_BOARD_FILE[i]}"
+    uboot_file="${BOARD_UBOOT_FILE[i]}"
+
+    artifact_src=""
+    resolved_dtb=""
+
+    echo "=== Board: $name ==="
+
+    if [[ "$VERBOSE" == "true" ]]; then
+        {
+            echo "Processing board [$i]:"
+            echo "  Name          : $name"
+            echo "  Platforms     : $platforms"
+            echo "  DTB           : $dtb"
+            echo "  CDT file      : ${cdt_board_file:-<none>}"
+            echo "  U-Boot file   : ${uboot_file:-<none>}"
+        } >&2
+    fi
+
+    # Determine if targeted
+    if ! grep -Fxq "$name" "$TARGETS_FILE"; then
+        echo "Skipping $name: not in target list"
+        BOARD_RESULT["$name"]="SKIPPED"
+        BOARD_REASON["$name"]="not in targets"
+
+        for platform in $platforms; do
+            PLAT_RESULT["$name/$platform"]="SKIPPED"
+            PLAT_REASON["$name/$platform"]="board not targeted"
+        done
+        continue
+    fi
+
+    # Resolve artifact source - EXCLUSIVE OR between dtb.bin and dtbs.tar.gz
+    if [[ -n "$DTB_BIN_SRC" ]]; then
+        artifact_src="$DTB_BIN_SRC"
+        echo "Using FIT DTB payload: $artifact_src"
+    else
+        # dtbs.tar.gz mode: locate requested DTB path from listing
+        resolved_dtb="$(resolve_dtb_path "$dtb" "$DTBS_FILE" || true)"
+        if [[ -z "$resolved_dtb" ]]; then
+            echo "Skipping $name: DTB '$dtb' not found in $(basename "$DTBS_TAR")"
+            suggest_dtb_candidates "$dtb" "$DTBS_FILE"
+            BOARD_RESULT["$name"]="SKIPPED"
+            BOARD_REASON["$name"]="DTB not found"
+            for platform in $platforms; do
+                PLAT_RESULT["$name/$platform"]="SKIPPED"
+                PLAT_REASON["$name/$platform"]="DTB not found"
+            done
+            continue
+        fi
+
+        # Extract DTB from tar
+        extract_dir="${BUILD_DIR}/dtbs_extract.$$"
+        rm -rf "$extract_dir"
+        mkdir -p "$extract_dir"
+
+        if tar -C "$extract_dir" -xzf "$DTBS_TAR" "$resolved_dtb" 2>/dev/null \
+           || tar -C "$extract_dir" -xzf "$DTBS_TAR" "./$resolved_dtb" 2>/dev/null; then
+            if [[ -f "$extract_dir/$resolved_dtb" ]]; then
+                artifact_src="$extract_dir/$resolved_dtb"
+            elif [[ -f "$extract_dir/$(basename "$resolved_dtb")" ]]; then
+                artifact_src="$extract_dir/$(basename "$resolved_dtb")"
+            fi
+        fi
+
+        [[ -f "$artifact_src" ]] || {
+            echo "ERROR: Failed to extract DTB $resolved_dtb from $DTBS_TAR" >&2
+            exit 18
+        }
+        echo "Using resolved DTB: $artifact_src"
+    fi
+
+    # Unzip boot and CDT only for targeted boards
+    [[ -f "$DOWNLOADDIR/${BOOT_FILENAME[i]}" ]] || {
+        echo "ERROR: Missing boot binaries zip for $name: $DOWNLOADDIR/${BOOT_FILENAME[i]}" >&2
+        exit 14
+    }
+    unpack_zip_smart "$DOWNLOADDIR/${BOOT_FILENAME[i]}" "${BUILD_DIR}/${name}_boot-binaries"
+
+    if [[ -n "${CDT_FILENAME[i]}" ]]; then
+        [[ -f "$DOWNLOADDIR/${CDT_FILENAME[i]}" ]] || {
+            echo "ERROR: Missing CDT zip for $name: $DOWNLOADDIR/${CDT_FILENAME[i]}" >&2
+            exit 15
+        }
+        unpack_zip_smart "$DOWNLOADDIR/${CDT_FILENAME[i]}" "${BUILD_DIR}/${name}_cdt"
+    fi
+
+    for platform in $platforms; do
+        esp_base=""
+        rootfs_base=""
+
+        [[ -n "$ESP_VFAT"    ]] && esp_base="$(basename "$ESP_VFAT")"
+        [[ -n "$ROOTFS_EXT4" ]] && rootfs_base="$(basename "$ROOTFS_EXT4")"
+
+	mkdir -p "${BUILD_DIR}/ptool/${platform}"
+        cp --preserve=mode,timestamps -v "$artifact_src" "${BUILD_DIR}/ptool/${platform}/dtb.bin"
+        dtb_filename="dtb.bin"
+        if [[ -n "$DTB_BIN_SRC" ]]; then
+                main_base="$(normalize_board_base "$name")"
+        else
+                main_base="$(basename "$resolved_dtb")"
+                main_base="${main_base%.dtb}"
+        fi
+
+        dbg "  -> Platform build"
+        dbg "     platform                  : $platform"
+        dbg "     dtb_filename              : $dtb_filename"
+        dbg "     main_base                 : $main_base"
+        dbg "     ESP_VFAT                  : ${ESP_VFAT:-<none>}"
+        dbg "     esp_base                  : ${esp_base:-<none>}"
+        dbg "     ROOTFS_EXT4               : ${ROOTFS_EXT4:-<none>}"
+        dbg "     rootfs_base               : ${rootfs_base:-<none>}"
+        dbg "     CDT board file            : ${cdt_board_file:-<none>}"
+        dbg "     resolved DTB              : ${resolved_dtb:-<none>}"
+        dbg "     DTB base                  : ${dtb_base:-<none>}"
+        dbg "     QCOM_PTOOL_DIR            : ${QCOM_PTOOL_DIR:-<none>}"
+
+        # Generate ptool layout ONCE per platform
+        generate_ptool_from_platform \
+            "$platform" \
+            "$QCOM_PTOOL_DIR" \
+            "$cdt_board_file" \
+            "$esp_base" \
+            "$rootfs_base" \
+            "$dtb_filename"
+
+        disk_type="$(cat "${BUILD_DIR}/ptool/${platform}/disk_type")"
+        flash_dir="${ARTIFACTDIR}/flash_${name}_${disk_type}"
+        rm -rf "$flash_dir"
+        mkdir -p "$flash_dir"
+
+        cp -a "${BUILD_DIR}/ptool/${platform}/." "$flash_dir/"
+
+        rm -f \
+            "$flash_dir"/rawprogram*_BLANK_GPT.xml \
+            "$flash_dir"/rawprogram*_WIPE_PARTITIONS.xml \
+            "$flash_dir"/wipe_rawprogram_PHY*.xml \
+            "$flash_dir"/gpt_empty*.bin \
+            "$flash_dir"/partitions* \
+            "$flash_dir"/disk_type 2>/dev/null || true
+
+        copy_boot_binaries_filtered "${BUILD_DIR}/${name}_boot-binaries" "$flash_dir"
+
+        if [[ -n "$uboot_file" ]]; then
+            uboot_resolved="$(resolve_maybe_relative_to_artifactdir "$uboot_file")"
+            if [[ -f "$uboot_resolved" ]]; then
+                cp --preserve=mode,timestamps -v "$uboot_resolved" "$flash_dir/boot.img"
+            else
+                echo "WARNING: U-Boot file not found: $uboot_file (resolved: $uboot_resolved)"
+            fi
+        fi
+
+        if [[ -n "$cdt_board_file" ]]; then
+            if [[ -f "${BUILD_DIR}/${name}_cdt/${cdt_board_file}" ]]; then
+                cp --preserve=mode,timestamps -v \
+                    "${BUILD_DIR}/${name}_cdt/${cdt_board_file}" \
+                    "$flash_dir"
+            elif [[ -f "${BUILD_DIR}/${name}_cdt/$(basename "$cdt_board_file")" ]]; then
+                cp --preserve=mode,timestamps -v \
+                    "${BUILD_DIR}/${name}_cdt/$(basename "$cdt_board_file")" \
+                    "$flash_dir"
+            else
+                echo "WARNING: CDT file not found in unpacked CDT: $cdt_board_file"
+            fi
+        fi
+
+        if [[ -n "$ESP_VFAT" ]]; then
+            cp --preserve=mode,timestamps -v \
+                "$ESP_VFAT" \
+                "$flash_dir/$(basename "$ESP_VFAT")"
+        fi
+
+        if [[ -n "$ROOTFS_EXT4" ]]; then
+            cp --preserve=mode,timestamps -v \
+                "$ROOTFS_EXT4" \
+                "$flash_dir/$(basename "$ROOTFS_EXT4")"
+        fi
+
+        # ---------------------------------------------------------------------
+        # DTB artifacts
+        # FIT mode:
+        #   - consume prebuilt dtb.bin from fit_build.py
+        #   - stage raw dtb.bin
+        #   - create flashable VFAT artifact if needed
+        #
+        # Legacy mode:
+        #   - extract requested DTB from dtbs.tar.gz
+        #   - create dtb.bin and named VFAT artifact(s)
+        # ---------------------------------------------------------------------
+        if [[ -n "$DTB_BIN_SRC" ]]; then
+            # dtb.bin from fit_build.py is already a complete FAT image
+            # (4 MiB, 4096-byte sectors) containing qclinux_fit.img — the
+            # filename hardcoded in UEFI firmware.  Copy it as dtb.bin (the
+            # file referenced by rawprogram*.xml / contents.xml) and create
+            # named .vfat aliases matching meta-qcom dtb-*-image.vfat layout.
+            cp --preserve=mode,timestamps -f "$DTB_BIN_SRC" "$flash_dir/dtb.bin"
+            create_fit_dtb_vfat_artifacts "$DTB_BIN_SRC" "$flash_dir" "$name" >/dev/null
+        else
+            if [[ ! -f "$DTBS_TAR" ]]; then
+                echo "WARNING: Omitting DTB artifacts for $name/$platform: dtbs tar not found" >&2
+            else
+                # Legacy packed DTB artifact
+                legacy_dtb_vfat="${flash_dir}/dtb.bin"
+                rm -f "$legacy_dtb_vfat"
+                create_legacy_dtb_vfat_from_tar "$dtb" "$legacy_dtb_vfat"
+
+                # Legacy-compatible named artifact
+                main_vfat="${flash_dir}/dtb-${main_base}-image.vfat"
+                rm -f "$main_vfat"
+                create_legacy_dtb_vfat_from_tar "$dtb" "$main_vfat"
+
+                # Board-specific legacy variants
+                if [[ "$name" == "qcs6490-rb3gen2-vision-kit" ]]; then
+                    for variant in industrial-mezzanine vision-mezzanine; do
+                        var_base="${main_base}-${variant}"
+                        var_vfat="${flash_dir}/dtb-${var_base}-image.vfat"
+                        rm -f "$var_vfat"
+                        create_legacy_dtb_vfat_from_tar "$dtb" "$var_vfat"
+                    done
+                fi
+            fi
+        fi
+
+        # Kernel artifact: vmlinux
+        # Prefer the real kernel ELF from the build tree; fall back to rootfs extraction
+        if copy_kernel_vmlinux_artifact "$flash_dir"; then
+            dbg "vmlinux artifact copied from kernel build tree"
+        elif [[ -n "$ROOTFS_EXT4" ]]; then
+            if extract_kernel_from_ext4_image "$ROOTFS_EXT4" "$flash_dir"; then
+                dbg "vmlinux artifact extracted from ext4 image (non-root)"
+            else
+                if [[ "$(id -u)" == "0" ]]; then
+                    mnt_dir="${BUILD_DIR}/mnt_rootfs.$$"
+                    rm -rf "$mnt_dir"
+                    mkdir -p "$mnt_dir"
+                    if mount -o loop,ro "$ROOTFS_EXT4" "$mnt_dir"; then
+                        extract_kernel_from_mounted_rootfs "$mnt_dir" "$flash_dir" || true
+                        umount "$mnt_dir" || true
+                    else
+                        echo "WARNING: Failed to mount rootfs ($ROOTFS_EXT4) as root; skipping vmlinux extraction" >&2
+                    fi
+                    rm -rf "$mnt_dir"
+                else
+                    echo "INFO: Skipping vmlinux extraction (no passwordless sudo). Install 'e2tools' or 'e2fsprogs' (debugfs) or run as root to enable extraction." >&2
+                fi
+            fi
+        fi
+        PLAT_RESULT["$name/$platform"]="BUILT"
+        PLAT_REASON["$name/$platform"]="ok (${disk_type})"
+        BOARD_RESULT["$name"]="BUILT"
+        BOARD_REASON["$name"]="ok (multi-platform)"
+    done
+done
+
+echo
+echo "================================================================================"
+echo "Build summary (per platform):"
+for ((i=0; i<BOARD_COUNT; i++)); do
+        name="${BOARD_NAME[i]}"
+        for platform in ${BOARD_PLATFORMS[i]}; do
+                key="$name/$platform"
+                printf "  - %-28s | %-18s : %-8s" "$name" "$platform" "${PLAT_RESULT[$key]:-SKIPPED}"
+                [[ -n "${PLAT_REASON[$key]:-}" ]] && printf "  (%s)" "${PLAT_REASON[$key]}"
+                echo
+        done
+done
+
+echo
+echo "Board roll-up:"
+for ((i=0; i<BOARD_COUNT; i++)); do
+        name="${BOARD_NAME[i]}"
+        printf "  - %-28s : %-8s" "$name" "${BOARD_RESULT[$name]:-SKIPPED}"
+        [[ -n "${BOARD_REASON[$name]:-}" ]] && printf "  (%s)" "${BOARD_REASON[$name]}"
+        echo
+done
+
+echo
+echo "Outputs in: $ARTIFACTDIR"

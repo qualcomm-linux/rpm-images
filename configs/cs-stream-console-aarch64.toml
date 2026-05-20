@@ -1,0 +1,141 @@
+name = "cs-stream-console-aarch64"
+description = "CentOS Stream ARM64 console image with baseline packages (NetworkManager, ssh, bluetooth, pipewire, etc.)"
+version = "0.0.2"
+distro = "centos-10"
+
+# --- Baseline packages ---
+[[packages]]
+name = "NetworkManager"
+version = "*"
+
+[[packages]]
+name = "openssh-clients"
+version = "*"
+
+[[packages]]
+name = "openssh-server"
+version = "*"
+
+[[packages]]
+name = "sudo"
+version = "*"
+
+[[packages]]
+name = "bluez"
+version = "*"
+
+[[packages]]
+name = "dosfstools"
+version = "*"
+
+[[packages]]
+name = "e2fsprogs"
+version = "*"
+
+[[packages]]
+name = "fwupd"
+version = "*"
+
+[[packages]]
+name = "pipewire"
+version = "*"
+
+[[packages]]
+name = "wireless-regdb"
+version = "*"
+
+[[packages]]
+name = "wpa_supplicant"
+version = "*"
+
+[[packages]]
+name = "usbutils"
+version = "*"
+
+[[packages]]
+name = "pciutils"
+version = "*"
+
+[[packages]]
+name = "v4l-utils"
+version = "*"
+
+[[packages]]
+name = "rfkill"
+version = "*"
+
+[[packages]]
+name = "vim"
+version = "*"
+
+[[packages]]
+name = "wget"
+version = "*"
+
+[[packages]]
+name = "podman"
+version = "*"
+
+[[packages]]
+name = "linux-firmware"
+version = "*"
+
+
+# Add your boot stack packages here (names vary by distro):
+# e.g. systemd, shim, grub2-efi-aa64, systemd-boot (if split), etc.
+[[packages]]
+name = "systemd"
+version = "*"
+
+[[packages]]
+name = "kernel-qcom-next"
+version = "*"
+
+[[customizations. Repositories]]
+id = "local-qcom-kernel"
+name = "RHEL 9 RT Repo"
+baseurls = ["http://10.37.19.114:8000/mock-fedora-builder/"]
+enabled = true
+gpgcheck = false
+
+[customizations.kernel]
+append = "clk_ignore_unused pd_ignore_unused audit=0 deferred_probe_timeout=30 console=ttyMSM0,115200 qcom_scm.download_mode=1"
+
+# Disk layout (raw/plain partitions).
+# Image Builder will create an ESP when mountpoint is /boot/efi and boot mode requires UEFI.
+# You can also define it explicitly as below.
+[[customizations.disk.partitions]]
+type = "plain"
+mountpoint = "/boot/efi"
+fs_type = "vfat"
+label = "ESP"
+minsize = "512 MiB"
+
+[[customizations.disk.partitions]]
+type = "plain"
+mountpoint = "/"
+fs_type = "ext4"
+label = "root"
+minsize = "8 GiB"
+
+# ------------------------------
+# Customizations (from your script)
+# ------------------------------
+
+# 1) Hostname (equivalent to writing /etc/hostname)
+[customizations]
+hostname = "centos"  # [1](https://docs.centos.org/centos-stream-docs/sources/)
+
+# 2) Enable services (equivalent to systemctl enable ...)
+[customizations.services]
+enabled = ["sshd", "NetworkManager"] # [1](https://docs.centos.org/centos-stream-docs/sources/)[2](https://osbuild.org/)
+
+# 3) Create user (equivalent to useradd ... -G wheel)
+[[customizations.user]]
+name = "qcom"
+password = "qcom"
+groups = ["wheel"] # [1](https://docs.centos.org/centos-stream-docs/sources/)
+
+# OPTIONAL: if you also want to inject an ssh public key for this user:
+# (supported as part of user customization in some blueprint examples)
+# key = "ssh-ed25519 AAAA... you@host"
