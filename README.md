@@ -38,10 +38,10 @@ Generates CentOS Stream 10 (aarch64) images for Qualcomm platforms.
 ### Host Tools
 ```bash
 # Fedora / CentOS Stream
-sudo dnf install podman python3 git curl unzip mkdosfs mtools
+sudo dnf install podman python3 git curl unzip mkdosfs mtools rpm-build dtc uboot-tools createrepo-c
 
 # Ubuntu / Debian
-sudo apt install podman python3 git curl unzip dosfstools mtools
+sudo apt install podman python3 git curl unzip dosfstools mtools rpm dtc u-boot-tools createrepo-c
 ```
 
 ---

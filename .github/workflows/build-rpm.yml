@@ -1,0 +1,306 @@
+name: Build RPM images
+
+on:
+  workflow_call:
+    outputs:
+      artifacts_url:
+        description: "URL to retrieve build artifacts"
+        value: ${{ jobs.create-output.outputs.url }}
+
+permissions:
+  contents: read
+
+# Concurrency is used to prevent multiple workflows from running for the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.sha) }}
+  cancel-in-progress: true
+
+env:
+  BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  FILESERVER_URL: "https://qli-prod-artifacts.qualcomm.com"
+
+jobs:
+
+  kernel-rpm:
+    name: Phase 1 - Kernel RPM
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    container:
+      image: fedora:latest
+      options: --user 0:0
+    steps:
+      - name: Record workspace owner
+        run: |
+          set -euo pipefail
+          owner="$(stat -c '%u:%g' "$GITHUB_WORKSPACE")"
+          echo "Workspace owner: ${owner}"
+          echo "WORKSPACE_OWNER=${owner}" >> "$GITHUB_ENV"
+
+      - name: Install kernel build dependencies
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            git make gcc bc bison flex perl python3 \
+            openssl openssl-devel elfutils-libelf-devel elfutils-devel \
+            rpm-build rpmdevtools \
+            rsync tar gzip findutils diffutils coreutils \
+            kmod dwarves \
+            hostname which
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build kernel + dtbs.tar.gz + RPMs
+        run: |
+          set -euo pipefail
+          python3 scripts/build_binrpm_pkg.py \
+            --qcom-6.18.y
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          if-no-files-found: error
+          path: |
+            linux/rpmbuild/RPMS/aarch64/kernel-*.rpm
+            linux/rpmbuild/SRPMS/kernel-*.src.rpm
+            linux/build/out/dtbs.tar.gz
+          retention-days: 7
+
+      - name: Hand workspace back to runner user
+        if: always()
+        run: |
+          set -euo pipefail
+          chown -R "${WORKSPACE_OWNER}" "$GITHUB_WORKSPACE" || true
+
+
+  publish-kernel-rpms:
+    name: Publish kernel RPMs to S3
+    needs: kernel-rpm
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: kernel-artifacts
+
+      - name: Stage kernel RPMs for publishing
+        run: |
+          set -euo pipefail
+          mkdir -p kernel-rpms
+          cp -a kernel-artifacts/rpmbuild/RPMS/aarch64/kernel-*.rpm kernel-rpms/ 2>/dev/null || true
+          cp -a kernel-artifacts/rpmbuild/SRPMS/kernel-*.src.rpm    kernel-rpms/ 2>/dev/null || true
+          cp -a kernel-artifacts/build/out/dtbs.tar.gz             kernel-rpms/ 2>/dev/null || true
+          (cd kernel-rpms && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
+
+      - name: Publish kernel RPMs (S3)
+        uses: qualcomm-linux/upload-private-artifact-action@aws-v4
+        id: upload_kernel_s3
+        with:
+          path: kernel-rpms
+          s3_bucket: qli-prd-platform-gh-artifacts
+          destination: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ env.BUILD_ID }}/kernel-rpms/
+          fileserver_url: ${{ env.FILESERVER_URL }}
+
+      - name: Print kernel RPM download URL
+        env:
+          kernel_url: ${{ steps.upload_kernel_s3.outputs.url }}
+        run: |
+          echo "Kernel RPMs URL: ${kernel_url}"
+          echo "## Kernel RPMs URL" >> $GITHUB_STEP_SUMMARY
+          echo "[${kernel_url}](${kernel_url})" >> $GITHUB_STEP_SUMMARY
+
+
+  os-image:
+    name: Phase 2 - qcow2 OS image
+    needs: [kernel-rpm]
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        uses: ./.github/actions/install-host-deps
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: kernel-artifacts
+
+      - name: Stage RPMs and build createrepo metadata
+        run: |
+          set -euo pipefail
+          mkdir -p local-rpms build/output build/logs
+          cp kernel-artifacts/rpmbuild/RPMS/aarch64/*.rpm local-rpms/
+
+          createrepo_c local-rpms/
+
+      - name: Build qcow2 with image-builder-cli
+        run: |
+          set -euo pipefail
+          sudo HOME=/tmp podman run --rm --privileged \
+            -v "$(pwd)/build/output:/output:rw" \
+            -v "$(pwd)/build/logs:/var/log:rw" \
+            -v "$(pwd)/configs/cs-stream-console-aarch64.toml:/blueprint.toml:ro" \
+            -v "$(pwd)/local-rpms:/local-rpms:ro" \
+            ghcr.io/osbuild/image-builder-cli:latest build \
+            --verbose \
+            --distro centos-10 \
+            --arch aarch64 \
+            --extra-repo https://mirror.stream.centos.org/10-stream/BaseOS/aarch64/os/ \
+            --extra-repo https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/ \
+            --extra-repo https://mirror.stream.centos.org/10-stream/CRB/aarch64/os/ \
+            --extra-repo file:///local-rpms/ \
+            --blueprint /blueprint.toml \
+            qcow2 \
+            --output-dir /output \
+            2>&1 | tee build/logs/build-cs-stream-console.log
+
+      - name: Upload qcow2
+        uses: actions/upload-artifact@v4
+        with:
+          name: qcow2-image
+          if-no-files-found: error
+          path: |
+            build/output/centos-10-qcow2-aarch64.qcow2
+            build/output/centos-10-qcow2-aarch64.qcow2.md5
+          retention-days: 7
+
+
+  flash-extract:
+    name: Phase 3 - Extract efi.bin + rootfs.img
+    needs: os-image
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        uses: ./.github/actions/install-host-deps
+
+      - name: Download qcow2 image
+        uses: actions/download-artifact@v4
+        with:
+          name: qcow2-image
+          path: build/output
+
+      - name: Extract flash artifacts
+        run: |
+          set -euo pipefail
+          scripts/extract_flash_artifacts.sh \
+            build/output/centos-10-qcow2-aarch64.qcow2 \
+            build/output/flashimages
+
+      - name: Upload flashimages
+        uses: actions/upload-artifact@v4
+        with:
+          name: flashimages
+          if-no-files-found: error
+          path: |
+            build/output/flashimages/efi.bin
+            build/output/flashimages/rootfs.img
+          retention-days: 7
+
+
+  flash-package:
+    name: Phase 4 - Per-board flash packages
+    needs: [flash-extract]
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        uses: ./.github/actions/install-host-deps
+
+      - name: Download flashimages
+        uses: actions/download-artifact@v4
+        with:
+          name: flashimages
+          path: build/output/flashimages
+
+      - name: Download qcow2 image
+        uses: actions/download-artifact@v4
+        with:
+          name: qcow2-image
+          path: build/output
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: kernel-artifacts
+
+      - name: Generate per-board flash packages
+        run: |
+          set -euo pipefail
+          ./scripts/generate_flat_build.sh \
+            --dtbs-tar=kernel-artifacts/build/out/dtbs.tar.gz \
+            --esp-vfat=build/output/flashimages/efi.bin \
+            --rootfs-ext4=build/output/flashimages/rootfs.img \
+            --target-boards=qcs6490-rb3gen2-vision-kit \
+            --verbose=true
+
+      - name: Stage artifacts for publishing
+        run: |
+          set -euo pipefail
+          mkdir -p rpm-artifacts
+          gzip -c build/output/centos-10-qcow2-aarch64.qcow2 \
+            > rpm-artifacts/centos-10-qcow2-aarch64.qcow2.gz
+          for d in build/out/flash_*; do
+            [ -d "$d" ] || continue
+            board="$(basename "$d")"
+            tar -czf "rpm-artifacts/${board}.tar.gz" -C "$d" .
+          done
+          (cd rpm-artifacts && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
+
+      - name: Upload artifacts (S3)
+        uses: qualcomm-linux/upload-private-artifact-action@aws-v4
+        id: upload_artifacts_s3
+        with:
+          path: rpm-artifacts
+          s3_bucket: qli-prd-platform-gh-artifacts
+          destination: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ env.BUILD_ID }}/
+          fileserver_url: ${{ env.FILESERVER_URL }}
+
+      - name: Upload flash packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash-packages
+          if-no-files-found: error
+          path: rpm-artifacts/flash_*.tar.gz
+          retention-days: 7
+
+      - name: Print download URL
+        env:
+          build_url: ${{ steps.upload_artifacts_s3.outputs.url }}
+        run: |
+          echo "Downloads URL: ${build_url}"
+          echo "${build_url}" > build_url
+          echo "## Download URL" >> $GITHUB_STEP_SUMMARY
+          echo "[${build_url}](${build_url})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload build URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: build_url
+          path: build_url
+          retention-days: 7
+
+
+  create-output:
+    name: Publish artifacts URL
+    needs: flash-package
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    steps:
+      - name: Download build URL
+        uses: actions/download-artifact@v4
+        with:
+          name: build_url
+      - id: url
+        run: |
+          url="$(cat build_url 2>/dev/null || echo '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}')"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"

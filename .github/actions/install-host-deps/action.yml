@@ -1,0 +1,36 @@
+name: Install host dependencies
+description: >
+  Install the Ubuntu host packages required by the image/flash build steps.
+  On ephemeral runners every job starts on a fresh machine, so each job that
+  uses these tools must install them itself rather than relying on a shared
+  setup job.
+
+runs:
+  using: composite
+  steps:
+    - name: Install host dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          podman \
+          createrepo-c \
+          qemu-utils \
+          parted \
+          e2fsprogs \
+          xfsprogs \
+          bsdmainutils \
+          gawk \
+          rpm \
+          cpio \
+          device-tree-compiler \
+          u-boot-tools \
+          mtools \
+          dosfstools \
+          curl \
+          unzip \
+          tar \
+          coreutils \
+          git \
+          python3
