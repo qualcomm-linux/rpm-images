@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause
 # =============================================================================
 # Usage:
 #   ./build-rpm.sh --tarball <path> --spec <path> [OPTIONS]
