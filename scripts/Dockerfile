@@ -15,6 +15,9 @@
 #   BASE_IMAGE - Base image to use (default: fedora:latest)
 #   RPM_MACROS - Extra rpmbuild macro definitions, space-separated
 #                (optional, e.g. "--define 'debug_package %{nil}'")
+#   EXTRA_RPMS - Space-separated list of local RPM paths (relative to build
+#                context) to install before running dnf builddep.
+#                (optional, e.g. "output/qrtr-1.2-1.el10.aarch64.rpm output/qrtr-devel-1.2-1.el10.aarch64.rpm")
 #
 # ── Single-arch build ────────────────────────────────────────────────────────
 #   docker build \
@@ -51,6 +54,7 @@ FROM --platform=$TARGETPLATFORM ${BASE_IMAGE} AS builder
 ARG TARBALL
 ARG SPEC_FILE
 ARG RPM_MACROS=""
+ARG EXTRA_RPMS=""
 
 # Validate required arguments
 RUN if [ -z "${TARBALL}" ]; then \
@@ -89,6 +93,18 @@ RUN rpmdev-setuptree
 
 COPY ${TARBALL} /root/rpmbuild/SOURCES/
 COPY ${SPEC_FILE} /root/rpmbuild/SPECS/
+
+# Install any locally-built dependency RPMs before running dnf builddep.
+# EXTRA_RPMS is a space-separated list of paths relative to the build context.
+RUN --mount=type=bind,source=.,target=/ctx \
+    if [ -n "${EXTRA_RPMS}" ]; then \
+        echo "Installing extra local RPMs: ${EXTRA_RPMS}"; \
+        rpm_paths=""; \
+        for rpm in ${EXTRA_RPMS}; do \
+            rpm_paths="${rpm_paths} /ctx/${rpm}"; \
+        done; \
+        dnf install -y ${rpm_paths}; \
+    fi
 
 RUN dnf builddep -y "/root/rpmbuild/SPECS/$(basename "${SPEC_FILE}")"
 
