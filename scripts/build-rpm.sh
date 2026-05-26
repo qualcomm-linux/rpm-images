@@ -39,6 +39,7 @@ OUTPUT_DIR="./output"
 PLATFORMS="linux/amd64,linux/arm64"
 SINGLE_ARCH=false
 RPM_MACROS=""
+EXTRA_RPMS=""
 BASE_IMAGE="quay.io/centos/centos:stream10"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -56,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         -p|--platform)    PLATFORMS="$2";   shift 2 ;;
         --single-arch)    SINGLE_ARCH=true; shift   ;;
         --macros)         RPM_MACROS="$2";  shift 2 ;;
+        --extra-rpms)     EXTRA_RPMS="$2";  shift 2 ;;
         --base-image)     BASE_IMAGE="$2";  shift 2 ;;
         -h|--help)        usage ;;
         *) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
@@ -174,6 +176,7 @@ echo " Platforms : ${PLATFORMS}"
 echo " Output    : ${OUTPUT_ABS}"
 echo " Base image: ${BASE_IMAGE}"
 [[ -n "${RPM_MACROS}" ]] && echo " Macros    : ${RPM_MACROS}"
+[[ -n "${EXTRA_RPMS}" ]] && echo " Extra RPMs: ${EXTRA_RPMS}"
 echo "============================================================"
 echo ""
 
@@ -183,6 +186,7 @@ ${BUILD_CMD} \
     --build-arg "SPEC_FILE=${SPEC_REL}" \
     --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
     ${RPM_MACROS:+--build-arg "RPM_MACROS=${RPM_MACROS}"} \
+    ${EXTRA_RPMS:+--build-arg "EXTRA_RPMS=${EXTRA_RPMS}"} \
     --output "type=local,dest=${OUTPUT_ABS}" \
     --target artifacts \
     "${BUILD_CONTEXT}"
