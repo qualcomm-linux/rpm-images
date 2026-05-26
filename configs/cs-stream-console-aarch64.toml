@@ -80,6 +80,9 @@ version = "*"
 name = "linux-firmware"
 version = "*"
 
+[[packages]]
+name = "qcom-firmware"
+version = "*"
 
 # Add your boot stack packages here (names vary by distro):
 # e.g. systemd, shim, grub2-efi-aa64, systemd-boot (if split), etc.
