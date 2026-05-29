@@ -27,7 +27,7 @@ ROOTDIR="${ROOTDIR:-$PWD/work}"
 ARTIFACTDIR="${ARTIFACTDIR:-$PWD/build/out}"
 DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
 
-QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/6c9922f220c884236303a94075eb7c62e0120af0.tar.gz"
+QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/0909c6ea6e143e94beb8780b64172643d093d3d4.tar.gz"
 QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
 
 # VFAT sizing knobs (KiB)
@@ -376,13 +376,13 @@ ensure_qcom_ptool() {
         mkdir -p "$dest"
         local cur_sha
         cur_sha="$(sha256sum "$QCOM_PTOOL_TARBALL" | awk '{print $1}')"
-        if [[ -f "$sha_file" ]] && [[ "$(cat "$sha_file")" == "$cur_sha" ]] && [[ -f "$dest/gen_partition.py" ]]; then
+        if [[ -f "$sha_file" ]] && [[ "$(cat "$sha_file")" == "$cur_sha" ]] && [[ -f "$dest/qcom_ptool/gen_partition.py" ]]; then
                 echo "$dest" # cache valid, reuse
                 return 0
         fi
         rm -rf "$dest"; mkdir -p "$dest"
         tar -xzf "$QCOM_PTOOL_TARBALL" --strip-components=1 -C "$dest"
-        [[ -f "$dest/gen_partition.py" ]] || { echo "qcom-ptool unpack failed (gen_partition.py missing)" >&2; exit 3; }
+        [[ -f "$dest/qcom_ptool/gen_partition.py" ]] || { echo "qcom-ptool unpack failed (gen_partition.py missing)" >&2; exit 3; }
         echo "$cur_sha" > "$sha_file"
         echo "$dest"  # ONLY return value on stdout
 }
@@ -652,11 +652,11 @@ generate_ptool_from_platform() {
 
         dbg "[ptool:$platform_dir] partition_map=${partition_map:-<empty>}"
 
-        python3 "${qcom_ptool}/gen_partition.py" -i "$conf" -o partitions.xml \
+        python3 "${qcom_ptool}/qcom_ptool/gen_partition.py" -i "$conf" -o partitions.xml \
                 ${partition_map:+-m "$partition_map"}
-        [[ -e "$contents" ]] && python3 "${qcom_ptool}/gen_contents.py" \
+        [[ -e "$contents" ]] && python3 "${qcom_ptool}/qcom_ptool/gen_contents.py" \
                 -p partitions.xml -t "$contents" -o contents.xml
-        python3 "${qcom_ptool}/ptool.py" -x partitions.xml
+        PYTHONPATH="${qcom_ptool}" python3 -m qcom_ptool.ptool -x partitions.xml
 
         popd >/dev/null
 }
