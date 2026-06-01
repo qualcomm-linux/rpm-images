@@ -23,9 +23,7 @@ from pathlib import Path
 
 VERBOSE = False
 
-# Pinned to the merge commit of PR #83 which introduced build-dtb-image.sh.
-# build-dtb-image.sh is not yet in any tagged release of qcom-dtb-metadata.
-QCOM_DTB_METADATA_COMMIT = "35fd78918aa403f80703bc3431f1399e5c938c17"
+QCOM_DTB_METADATA_COMMIT = "bdc5cd91fded70c0b8e52228067054aa841f1e7f"
 
 
 def die(msg: str):
