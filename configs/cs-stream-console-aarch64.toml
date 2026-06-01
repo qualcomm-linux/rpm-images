@@ -137,7 +137,7 @@ enabled = ["sshd", "NetworkManager"] # [1](https://docs.centos.org/centos-stream
 [[customizations.user]]
 name = "qcom"
 password = "qcom"
-groups = ["wheel"] # [1](https://docs.centos.org/centos-stream-docs/sources/)
+groups = ["wheel", "adm", "audio", "render", "users", "video"]
 
 # OPTIONAL: if you also want to inject an ssh public key for this user:
 # (supported as part of user customization in some blueprint examples)
