@@ -13,6 +13,10 @@
 #                             (default: linux/amd64,linux/arm64)
 #       --single-arch         Build for the host architecture only
 #       --macros   <string>   Extra rpmbuild --define strings
+#       --extra-rpms <rpms>   Space-separated list of local RPM file paths to
+#                             install before running dnf builddep. Useful for
+#                             pre-built dependency RPMs not in any repository.
+#                             (e.g. "output/foo-1.0.rpm output/foo-devel-1.0.rpm")
 #       --base-image <image>  Override the builder base image
 #                             (default: fedora:latest)
 #       --extra-repo <url>    URL of an existing dnf repository (e.g. Artifactory)
@@ -34,7 +38,11 @@
 #                  --output ./rpms \
 #                  --macros "--define 'debug_package %{nil}'"
 #
-#   # Provide an extra dnf repository (e.g. Artifactory) for BuildRequires resolution
+#   # Pre-install local dependency RPMs before the build
+#   ./build-rpm.sh --tarball mypackage-1.0.tar.gz --spec mypackage.spec \
+#                  --extra-rpms "output/foo-1.0.rpm output/foo-devel-1.0.rpm"
+#
+#   # Register an extra dnf repository (e.g. Artifactory) for BuildRequires resolution
 #   ./build-rpm.sh --tarball mypackage-1.0.tar.gz --spec mypackage.spec \
 #                  --extra-repo https://artifactory.example.com/artifactory/my-rpm-repo/
 # =============================================================================
