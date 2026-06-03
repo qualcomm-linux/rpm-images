@@ -18,6 +18,10 @@
 #   EXTRA_RPMS - Space-separated list of local RPM paths (relative to build
 #                context) to install before running dnf builddep.
 #                (optional, e.g. "output/qrtr-1.2-1.el10.aarch64.rpm output/qrtr-devel-1.2-1.el10.aarch64.rpm")
+#   EXTRA_REPO_DIR - URL of an existing dnf repository (e.g. Artifactory) to
+#                    register inside the container as "extra-repo". Packages
+#                    from this repo are available to dnf builddep and
+#                    EXTRA_RPMS installs. (optional)
 #
 # ── Single-arch build ────────────────────────────────────────────────────────
 #   docker build \
@@ -55,6 +59,7 @@ ARG TARBALL
 ARG SPEC_FILE
 ARG RPM_MACROS=""
 ARG EXTRA_RPMS=""
+ARG EXTRA_REPO_DIR=""
 
 # Validate required arguments
 RUN if [ -z "${TARBALL}" ]; then \
@@ -93,6 +98,15 @@ RUN rpmdev-setuptree
 
 COPY ${TARBALL} /root/rpmbuild/SOURCES/
 COPY ${SPEC_FILE} /root/rpmbuild/SPECS/
+
+# If an extra dnf repository URL was provided, register it so that
+# dnf builddep (and any EXTRA_RPMS installs below) can resolve packages from it.
+RUN if [ -n "${EXTRA_REPO_DIR}" ]; then \
+        echo "Registering extra dnf repo: ${EXTRA_REPO_DIR}"; \
+        printf '[extra-repo]\nname=Extra RPM Repository\nbaseurl=%s\nenabled=1\ngpgcheck=0\n' \
+            "${EXTRA_REPO_DIR}" > /etc/yum.repos.d/extra-repo.repo; \
+        dnf clean metadata; \
+    fi
 
 # Install any locally-built dependency RPMs before running dnf builddep.
 # EXTRA_RPMS is a space-separated list of paths relative to the build context.

@@ -15,6 +15,10 @@
 #       --macros   <string>   Extra rpmbuild --define strings
 #       --base-image <image>  Override the builder base image
 #                             (default: fedora:latest)
+#       --extra-repo <url>    URL of an existing dnf repository (e.g. Artifactory)
+#                             to register inside the build container. Packages
+#                             from this repo are available to satisfy
+#                             BuildRequires (via dnf builddep).
 #   -h, --help                Show this help
 #
 # Examples:
@@ -29,6 +33,10 @@
 #   ./build-rpm.sh --tarball mypackage-1.0.tar.gz --spec mypackage.spec \
 #                  --output ./rpms \
 #                  --macros "--define 'debug_package %{nil}'"
+#
+#   # Provide an extra dnf repository (e.g. Artifactory) for BuildRequires resolution
+#   ./build-rpm.sh --tarball mypackage-1.0.tar.gz --spec mypackage.spec \
+#                  --extra-repo https://artifactory.example.com/artifactory/my-rpm-repo/
 # =============================================================================
 set -euo pipefail
 
@@ -40,6 +48,7 @@ PLATFORMS="linux/amd64,linux/arm64"
 SINGLE_ARCH=false
 RPM_MACROS=""
 EXTRA_RPMS=""
+EXTRA_REPO_DIR=""
 BASE_IMAGE="quay.io/centos/centos:stream10"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -58,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --single-arch)    SINGLE_ARCH=true; shift   ;;
         --macros)         RPM_MACROS="$2";  shift 2 ;;
         --extra-rpms)     EXTRA_RPMS="$2";  shift 2 ;;
+        --extra-repo)     EXTRA_REPO_DIR="$2";  shift 2 ;;
         --base-image)     BASE_IMAGE="$2";  shift 2 ;;
         -h|--help)        usage ;;
         *) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
@@ -76,6 +86,9 @@ if [[ ! -f "${TARBALL}" ]]; then
 fi
 if [[ ! -f "${SPEC_FILE}" ]]; then
     echo "ERROR: Spec file not found: ${SPEC_FILE}" >&2; exit 1
+fi
+if [[ -n "${EXTRA_REPO_DIR}" && ! "${EXTRA_REPO_DIR}" =~ ^https?:// ]]; then
+    echo "ERROR: --extra-repo must be an HTTP/HTTPS URL." >&2; exit 1
 fi
 
 # ── Resolve absolute paths ─────────────────────────────────────────────────────
@@ -177,6 +190,7 @@ echo " Output    : ${OUTPUT_ABS}"
 echo " Base image: ${BASE_IMAGE}"
 [[ -n "${RPM_MACROS}" ]] && echo " Macros    : ${RPM_MACROS}"
 [[ -n "${EXTRA_RPMS}" ]] && echo " Extra RPMs: ${EXTRA_RPMS}"
+[[ -n "${EXTRA_REPO_DIR}" ]] && echo " Extra repo: ${EXTRA_REPO_DIR}"
 echo "============================================================"
 echo ""
 
@@ -187,6 +201,7 @@ ${BUILD_CMD} \
     --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
     ${RPM_MACROS:+--build-arg "RPM_MACROS=${RPM_MACROS}"} \
     ${EXTRA_RPMS:+--build-arg "EXTRA_RPMS=${EXTRA_RPMS}"} \
+    ${EXTRA_REPO_DIR:+--build-arg "EXTRA_REPO_DIR=${EXTRA_REPO_DIR}"} \
     --output "type=local,dest=${OUTPUT_ABS}" \
     --target artifacts \
     "${BUILD_CONTEXT}"
