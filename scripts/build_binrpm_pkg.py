@@ -30,6 +30,9 @@ LINUX_NEXT_GIT_REF = "master"
 QCOM_NEXT_GIT_REPO = "https://github.com/qualcomm-linux/kernel"
 QCOM_NEXT_GIT_REF = "qcom-next"
 
+QCOM_618Y_GIT_REPO = "https://github.com/qualcomm-linux/kernel"
+QCOM_618Y_GIT_REF = "qcom-6.18.y"
+
 BASE_CONFIG = "defconfig"
 
 
@@ -127,6 +130,8 @@ def main():
     parser.add_argument("--ref", default=GIT_REF)
     parser.add_argument("--linux-next", action="store_true")
     parser.add_argument("--qcom-next", action="store_true")
+    parser.add_argument("--qcom-6.18.y", dest="qcom_618y", action="store_true",
+                        help="Use qcom-6.18.y branch from qualcomm-linux/kernel")
 
     parser.add_argument("--local-dir", type=str, default=None,
                         help="Use existing kernel source tree instead of cloning")
@@ -156,6 +161,8 @@ def main():
         args.repo, args.ref = LINUX_NEXT_GIT_REPO, LINUX_NEXT_GIT_REF
     if args.qcom_next and args.repo == GIT_REPO and args.ref == GIT_REF:
         args.repo, args.ref = QCOM_NEXT_GIT_REPO, QCOM_NEXT_GIT_REF
+    if args.qcom_618y and args.repo == GIT_REPO and args.ref == GIT_REF:
+        args.repo, args.ref = QCOM_618Y_GIT_REPO, QCOM_618Y_GIT_REF
 
     cross_prefix = args.cross_prefix.strip()
     if cross_prefix in ("''", '""', "none"):
