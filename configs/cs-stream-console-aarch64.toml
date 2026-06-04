@@ -9,6 +9,7 @@ packages = [
   {name = "e2fsprogs",        version = "*"},
   {name = "fwupd",            version = "*"},
   {name = "NetworkManager",   version = "*"},
+  {name = "NetworkManager-wifi",           version = "*"},
   {name = "openssh-clients",  version = "*"},
   {name = "openssh-server",   version = "*"},
   {name = "pciutils",         version = "*"},
