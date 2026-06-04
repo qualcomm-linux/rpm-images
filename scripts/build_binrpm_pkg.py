@@ -184,7 +184,15 @@ def main():
     local_conf_dir = linux_dir / "kernel" / "configs"
     local_conf_dir.mkdir(parents=True, exist_ok=True)
 
+    arch_configs_dir = linux_dir / "arch" / "arm64" / "configs"
+
+    QCOM_FRAGMENTS = ["prune.config", "qcom.config"]
     config_targets = []
+    for name in QCOM_FRAGMENTS:
+        if (arch_configs_dir / name).exists():
+            log_i(f"Applying in-tree fragment: arch/arm64/configs/{name}")
+            config_targets.append(f"arch/arm64/configs/{name}")
+
     for i, fragment in enumerate(args.fragments):
         frag_path = Path(fragment)
         if frag_path.exists():
@@ -193,13 +201,11 @@ def main():
             log_i(f"Copying local fragment {frag_path} -> {dest_path}")
             shutil.copy2(frag_path, dest_path)
             config_targets.append(f"kernel/configs/{local_name}")
+        elif (arch_configs_dir / fragment).exists():
+            log_i(f"Using repo fragment: {fragment}")
+            config_targets.append(f"arch/arm64/configs/{fragment}")
         else:
-            repo_frag = linux_dir / "arch" / "arm64" / "configs" / fragment
-            if repo_frag.exists():
-                log_i(f"Using repo fragment: {fragment}")
-                config_targets.append(f"arch/arm64/configs/{fragment}")
-            else:
-                fatal(f"Fragment not found: {fragment}")
+            fatal(f"Fragment not found: {fragment}")
 
     # Env
     env = os.environ.copy()
