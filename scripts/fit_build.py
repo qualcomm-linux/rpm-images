@@ -109,16 +109,8 @@ def main():
         help="Output root directory (default: ./out)",
     )
     ap.add_argument(
-        "--its", default="",
-        help="[Ignored] ITS selection is handled by build-dtb-image.sh",
-    )
-    ap.add_argument(
-        "--flavor", default="qcom-next", choices=["qcom-next", "main"],
-        help="[Ignored] build-dtb-image.sh always uses qcom-next-fitimage.its",
-    )
-    ap.add_argument(
         "--forcecreate", action="store_true",
-        help="[Ignored] build-dtb-image.sh does not support DTBO pruning",
+        help="Pass --prune to build-dtb-image.sh to drop DTBs with no metadata entry",
     )
     ap.add_argument(
         "--report", action="store_true",
@@ -131,13 +123,6 @@ def main():
 
     args = ap.parse_args()
     VERBOSE = bool(args.verbose)
-
-    if args.its:
-        info("WARNING: --its is ignored; build-dtb-image.sh uses the ITS from qcom-dtb-metadata")
-    if args.flavor != "qcom-next":
-        info("WARNING: --flavor is ignored; build-dtb-image.sh always uses qcom-next-fitimage.its")
-    if args.forcecreate:
-        info("WARNING: --forcecreate is ignored; build-dtb-image.sh does not support DTBO pruning")
 
     outdir = Path(args.outdir).resolve()
     metadir = outdir / "qcom-dtb-metadata"
