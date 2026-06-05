@@ -4,12 +4,7 @@
 """
 fit_build.py - Build a FIT DTB image for Qualcomm ARM64 platforms.
 
-Delegates to build-dtb-image.sh from qcom-dtb-metadata (PR #83), which is
-the official self-contained build tool.  Cloning qcom-dtb-metadata is
-sufficient — no additional tooling repositories, no network access at build
-time, and no metadata path arguments.
-
-Build pipeline (handled entirely by build-dtb-image.sh):
+Build steps (handled by build-dtb-image.sh):
   1. Stage DTBs into a temporary tree
   2. Compile qcom-metadata.dts → qcom-metadata.dtb  (dtc)
   3. Copy qcom-next-fitimage.its into the staging directory
@@ -23,7 +18,7 @@ from pathlib import Path
 
 VERBOSE = False
 
-QCOM_DTB_METADATA_COMMIT = "bdc5cd91fded70c0b8e52228067054aa841f1e7f"
+QCOM_DTB_METADATA_COMMIT = "bf8f11f5274d850f71cc1af8b5a5c46683c14eee"
 
 
 def die(msg: str):
@@ -169,6 +164,9 @@ def main():
         die(f"Unsupported source: {source} (expected .deb, .rpm, or directory)")
 
     dtb_bin = outdir / "dtb.bin"
+
+    if args.forcecreate:
+        script_args.append("--prune")
 
     # build-dtb-image.sh pipeline:
     #   1. Stage DTBs into a temp tree (arch/arm64/boot/dts/qcom/)
