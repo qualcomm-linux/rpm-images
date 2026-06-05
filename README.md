@@ -22,18 +22,9 @@ Generates CentOS Stream 10 (aarch64) images for Qualcomm platforms.
 
 | Board name | Storage |
 |---|---|
-| `qcs615-ride` | UFS |
 | `qcs6490-rb3gen2-vision-kit` | UFS |
 | `qcs6490-rb3gen2-core-kit` | UFS |
 | `qcs6490-rb3gen2-industrial-kit` | UFS |
-| `qcm6490-idp` | UFS |
-| `qcs8300-ride` | UFS |
-| `monaco-evk` | eMMC / UFS |
-| `monaco-arduino-monza` | eMMC |
-| `qcs9100-ride-r3` | UFS |
-| `lemans-evk` | UFS |
-| `qrb2210-rb1` | eMMC |
-| `qrb2210-arduino-imola` | eMMC |
 
 ---
 
@@ -291,7 +282,7 @@ to legacy MultiDtb selection.
 
 # Multiple boards (comma-separated)
 ./scripts/generate_flat_build.sh \
-  --target-boards qcs6490-rb3gen2-vision-kit,qcs9100-ride-r3 \
+  --target-boards qcs6490-rb3gen2-vision-kit,qcs6490-rb3gen2-core-kit \
   --dtb-bin     build/output/fit/dtb.bin \
   --esp-vfat    build/output/flashimages/efi.bin \
   --rootfs-ext4 build/output/flashimages/rootfs.img
@@ -306,11 +297,6 @@ to legacy MultiDtb selection.
 | `--esp-vfat=<path>` | — | EFI System Partition image |
 | `--rootfs-ext4=<path>` | — | Root filesystem image |
 | `--target-boards=<list\|all>` | `all` | Comma-separated board names or `all` |
-| `--build-qcs615=(true\|false)` | `true` | Include/exclude QCS615 boards |
-| `--build-qcm6490=(true\|false)` | `true` | Include/exclude QCM6490 boards |
-| `--build-qcs8300=(true\|false)` | `true` | Include/exclude QCS8300 boards |
-| `--build-qcs9100=(true\|false)` | `true` | Include/exclude QCS9100 boards |
-| `--build-rb1=(true\|false)` | `false` | Include RB1 (requires `--u-boot-rb1`) |
 | `--verbose=(true\|false)` | `false` | Enable debug output |
 | `ARTIFACTDIR=<path>` | `$PWD/build/out` | Output directory (env var) |
 

@@ -4,12 +4,6 @@
 set -euo pipefail
 
 # ---- Defaults ---------------------------------------------------------------
-BUILD_QCS615="${BUILD_QCS615:-true}"
-BUILD_QCM6490="${BUILD_QCM6490:-true}"
-BUILD_QCS8300="${BUILD_QCS8300:-true}"
-BUILD_QCS9100="${BUILD_QCS9100:-true}"
-BUILD_RB1="${BUILD_RB1:-false}"
-U_BOOT_RB1="${U_BOOT_RB1:-}"        # path to u-boot (copied as boot.img for RB1)
 TARGET_BOARDS="${TARGET_BOARDS:-all}"
 
 # Verbosity and safety
@@ -41,16 +35,9 @@ usage() {
         cat <<EOF
 Usage:
   ./scripts/generate_flat_build.sh [OPTIONS]
-Build selection:
-  --build-qcs615=(true|false)       default: true
-  --build-qcm6490=(true|false)      default: true
-  --build-qcs8300=(true|false)      default: true
-  --build-qcs9100=(true|false)      default: true
-  --build-rb1=(true|false)          default: false
-  --u-boot-rb1=<path>               enables RB1 and copies as boot.img
 Inputs:
   --target-boards=<list|all>        default: all
-                                    e.g. "qcs6490-rb3gen2-vision-kit,monaco-evk"
+                                    e.g. "qcs6490-rb3gen2-vision-kit,qcs6490-rb3gen2-core-kit"
 Optional flat images (filenames are rewired to match their basenames):
   --esp-vfat=<path/to/efi.bin>
   --rootfs-ext4=<path/to/rootfs.img>
@@ -67,20 +54,13 @@ VFAT options (advanced):
   VFAT_MIN_KIB                      default: $VFAT_MIN_KIB
   VFAT_SECTOR_SIZE                  default: $VFAT_SECTOR_SIZE
 Outputs:
-   \$ARTIFACTDIR/flash_<board>_<ufs|emmc>/
+   \$ARTIFACTDIR/flash_<board>_ufs/
 EOF
 }
 
 # ---- Parse CLI --------------------------------------------------------------
 for arg in "$@"; do
         case "$arg" in
-                --build-qcs615=*)       BUILD_QCS615="${arg#*=}";;
-                --build-qcm6490=*)      BUILD_QCM6490="${arg#*=}";;
-                --build-qcs8300=*)      BUILD_QCS8300="${arg#*=}";;
-                --build-qcs9100=*)      BUILD_QCS9100="${arg#*=}";;
-                --build-rb1=*)          BUILD_RB1="${arg#*=}";;
-                --u-boot-rb1=*)         U_BOOT_RB1="${arg#*=}"; BUILD_RB1="true";;
-
                 --target-boards=*)      TARGET_BOARDS="${arg#*=}";;
 
                 --esp-vfat=*)           ESP_VFAT="${arg#*=}";;
@@ -122,7 +102,7 @@ dbg() {
 }
 
 # Normalize boolean flags
-for _b in BUILD_QCS615 BUILD_QCM6490 BUILD_QCS8300 BUILD_QCS9100 BUILD_RB1 VERBOSE ALLOW_MISSING_SHA; do
+for _b in VERBOSE ALLOW_MISSING_SHA; do
         val=$(normalize_bool "${!_b}")
         if [[ "$val" == "INVALID" ]]; then
                 echo "Invalid boolean for $_b: ${!_b}. Use true/false (or 1/0/yes/no)." >&2
@@ -147,14 +127,12 @@ export MTOOLS_SKIP_CHECK=1
 declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB
 declare -a BOOT_DESC BOOT_URL BOOT_FILENAME BOOT_SHA
 declare -a CDT_DESC CDT_URL CDT_FILENAME CDT_SHA CDT_BOARD_FILE
-declare -a BOARD_UBOOT_FILE
 BOARD_COUNT=0
 
 add_board() {
         local name="$1" platforms="$2" dtb="$3"
         local boot_desc="$4" boot_url="$5" boot_filename="$6" boot_sha="$7"
         local cdt_desc="$8" cdt_url="${9}" cdt_filename="${10}" cdt_sha="${11}" cdt_board_file="${12}"
-        local uboot_file="${13:-}"
 
         BOARD_NAME[BOARD_COUNT]="$name"
         BOARD_PLATFORMS[BOARD_COUNT]="$platforms"
@@ -171,167 +149,45 @@ add_board() {
         CDT_SHA[BOARD_COUNT]="$cdt_sha"
         CDT_BOARD_FILE[BOARD_COUNT]="$cdt_board_file"
 
-        BOARD_UBOOT_FILE[BOARD_COUNT]="$uboot_file"
         ((++BOARD_COUNT))
 }
 
-# ---- Populate boards (aligned to YAML) --------------------------------------
-if [[ "$BUILD_QCS615" == "true" ]]; then
-        add_board \
-                "qcs615-ride" "qcs615-ride/ufs" "qcom/qcs615-ride.dtb" \
-                "QCS615 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS615.LE.1.0/common/build/common/bin/QCS615_bootbinaries.zip" \
-                "qcs615_boot-binaries.zip" \
-                "6730c26235880f469075acb62115c9e1e566979d1bf12f4a4c4ecf590c1d357e" \
-                "QCS615 Ride CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS615/cdt/ADP_AIR_SA6155P_V2.zip" \
-                "qcs615-ride_cdt.zip" \
-                "37d99eb113e286400bce0d70aa12a74d05f93d01f045bf67e7a46b3c606c8fd0" \
-                "cdt_adp_air_sa6155p.bin" \
-                ""
-fi
-
-if [[ "$BUILD_QCM6490" == "true" ]]; then
-        add_board \
-                "qcs6490-rb3gen2-vision-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
-                "QCM6490 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
-                "qcm6490_boot-binaries.zip" \
-                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
-                "RB3 Gen2 Vision Kit CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip" \
-                "qcs6490-rb3gen2-vision-kit_cdt.zip" \
-                "a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c" \
-                "cdt_vision_kit.bin" \
-                ""
-
-        add_board \
-                "qcs6490-rb3gen2-core-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
-                "QCM6490 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
-                "qcm6490_boot-binaries.zip" \
-                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
-                "RB3 Gen2 Core Kit CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip" \
-                "qcs6490-rb3gen2-core-kit_cdt.zip" \
-                "0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e" \
-                "cdt_core_kit.bin" \
-                ""
-
-        add_board \
-                "qcs6490-rb3gen2-industrial-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
-                "QCM6490 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
-                "qcm6490_boot-binaries.zip" \
-                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
-                "RB3 Gen2 Industrial Kit CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-kit.zip" \
-                "qcs6490-rb3gen2-industrial-kit_cdt.zip" \
-                "6cf70a1b9eb0ff27176bb77c679d519f58fbad2cdf2fd7bec1e305c1bf52c013" \
-                "cdt_industrial_kit.bin" \
-                ""
-
-        add_board \
-                "qcm6490-idp" "qcm6490-idp/ufs" "qcom/qcm6490-idp.dtb" \
-                "QCM6490 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
-                "qcm6490_boot-binaries.zip" \
-                "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
-                "QCM6490 IDP CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/qcm6490-idp.zip" \
-                "qcm6490-idp_cdt.zip" \
-                "32226891c51fe6f2bf8def4be66e614bf2994bffaf0dac343b9baa05f7829e11" \
-                "cdt_kodiak_idp_0.1.0.bin" \
-                ""
-fi
-
-if [[ "$BUILD_QCS8300" == "true" ]]; then
-        add_board \
-                "qcs8300-ride" "qcs8300-ride-sx/ufs" "qcom/qcs8300-ride.dtb" \
-                "QCS8300 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS8300.LE.1.0/common/build/ufs/bin/QCS8300_bootbinaries.zip" \
-                "qcs8300_boot-binaries.zip" \
-                "e07ed2b58c639373e22c289873f1059a4ba48cfe41bd9ae2f9651884177b60c9" \
-                "QCS8300 Ride SX EVK CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS8300/cdt/ride-sx.zip" \
-                "qcs8300-ride-sx_cdt.zip" \
-                "d7fc667372b28383a36d586333097d84b9d9c104f4dd1845d33904e2d6b39f80" \
-                "cdt_ride_sx.bin" \
-                ""
-
-        add_board \
-                "monaco-evk" "iq-8275-evk/emmc iq-8275-evk/ufs" "qcom/monaco-evk.dtb" \
-                "QCS8300 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS8300.LE.1.0/common/build/ufs/bin/QCS8300_bootbinaries.zip" \
-                "qcs8300_boot-binaries.zip" \
-                "e07ed2b58c639373e22c289873f1059a4ba48cfe41bd9ae2f9651884177b60c9" \
-                "IQ-8275 EVK CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS8300/cdt/qcs8275-iq-8275-evk-pro-sku.zip" \
-                "qcs8275-iq-8275-evk-pro-sku.zip" \
-                "cbe2009c8ef7dbacd716141bf01b8e1b26788c4a4f3145e60fe3b4a6b3aabc04" \
-                "cdt_qcs8275_iq_8275_evk_pro_sku.bin" \
-                ""
-
-        add_board \
-                "monaco-arduino-monza" "qcs8275-monza/emmc" "qcom/monaco-arduino-monza.dtb" \
-                "QCS8300 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS8300.LE.1.0/common/build/ufs/bin/QCS8300_bootbinaries.zip" \
-                "qcs8300_boot-binaries.zip" \
-                "e07ed2b58c639373e22c289873f1059a4ba48cfe41bd9ae2f9651884177b60c9" \
-                "Monza CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS8300/cdt/qcs8275-Monza_v1.zip" \
-                "qcs8275-monza.zip" \
-                "8484beb2ac1ff74a129c586f6d5331536765975dbabfb0600509f11010ec1c41" \
-                "cdt_qcs8275-Monza.bin" \
-                ""
-fi
-
-if [[ "$BUILD_QCS9100" == "true" ]]; then
-        add_board \
-                "qcs9100-ride-r3" "qcs9100-ride-sx/ufs" "qcom/qcs9100-ride-r3.dtb" \
-                "QCS9100 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS9100.LE.1.0/common/build/ufs/bin/QCS9100_bootbinaries.zip" \
-                "qcs9100_boot-binaries.zip" \
-                "df1b928a25f428f4c76a760be8a094104cec75cd5a6f758d9e3c62ad9be71c0c" \
-                "QCS9100 Ride Rev3 EVK CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS9100/cdt/ride-sx_v3.zip" \
-                "qcs9100-ride-sx-v3_cdt.zip" \
-                "377a8405899ac82199deaf70bca3648c15b924a3fcef8f109555e661ed70f4b9" \
-                "cdt_ride_sx.bin" \
-                ""
-
-        add_board \
-                "lemans-evk" "iq-9075-evk/ufs" "qcom/lemans-evk.dtb" \
-                "QCS9100 boot binaries" \
-                "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCS9100.LE.1.0/common/build/ufs/bin/QCS9100_bootbinaries.zip" \
-                "qcs9100_boot-binaries.zip" \
-                "df1b928a25f428f4c76a760be8a094104cec75cd5a6f758d9e3c62ad9be71c0c" \
-                "QCS9100 RB8 Core Kit CDT" \
-                "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS9100/cdt/rb8_core_kit.zip" \
-                "qcs9100-rb8-core-kit_cdt.zip" \
-                "a252244f800d7c9e15883e12935af4113f9f2ecba6490e46cd9b943169f15bfa" \
-                "cdt_rb8_core_kit.bin" \
-                ""
-fi
-
-if [[ "$BUILD_RB1" == "true" ]]; then
-        add_board \
-                "qrb2210-rb1" "qrb2210-rb1/emmc" "qcom/qrb2210-rb1.dtb" \
-                "RB1 rescue image" \
-                "https://artifacts.codelinaro.org/artifactory/clo-549-96boards-backup/96boards/rb1/linaro/rescue/23.12/rb1-bootloader-emmc-linux-47528.zip" \
-                "qrb2210-rb1_rescue-image.zip" \
-                "c75b6c63eb24c8ca36dad08ba4d4e93f3f4cd7dce60cf1b6dfb5790dc181cc3d" \
-                "" "" "" "" "" \
-                "$U_BOOT_RB1"
-fi
+# ---- Populate boards --------------------------------------------------------
+add_board \
+        "qcs6490-rb3gen2-vision-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
+        "QCM6490 boot binaries" \
+        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+        "qcm6490_boot-binaries.zip" \
+        "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+        "RB3 Gen2 Vision Kit CDT" \
+        "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip" \
+        "qcs6490-rb3gen2-vision-kit_cdt.zip" \
+        "a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c" \
+        "cdt_vision_kit.bin"
 
 add_board \
-        "qrb2210-arduino-imola" "qrb2210-unoq/emmc-16GB" "qcom/qrb2210-arduino-imola.dtb" \
-        "UNO Q boot binaries" \
-        "https://downloads.arduino.cc/debian-im/unoq-bootloader-emmc-linux-251020.zip" \
-        "qrb2210-arduino-imola_boot-binaries.zip" \
-        "c606e95d0107f8c58d0dd9494e00624d1db7c4361cca20513bc78ef02ca28dd1" \
-        "" "" "" "" "" ""
+        "qcs6490-rb3gen2-core-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
+        "QCM6490 boot binaries" \
+        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+        "qcm6490_boot-binaries.zip" \
+        "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+        "RB3 Gen2 Core Kit CDT" \
+        "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip" \
+        "qcs6490-rb3gen2-core-kit_cdt.zip" \
+        "0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e" \
+        "cdt_core_kit.bin"
+
+add_board \
+        "qcs6490-rb3gen2-industrial-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
+        "QCM6490 boot binaries" \
+        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+        "qcm6490_boot-binaries.zip" \
+        "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+        "RB3 Gen2 Industrial Kit CDT" \
+        "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-kit.zip" \
+        "qcs6490-rb3gen2-industrial-kit_cdt.zip" \
+        "6cf70a1b9eb0ff27176bb77c679d519f58fbad2cdf2fd7bec1e305c1bf52c013" \
+        "cdt_industrial_kit.bin"
 
 # ---- Utilities ---------------------------------------------------------------
 download_if_needed() {
@@ -486,6 +342,7 @@ resolve_kernel_vmlinux_source() {
 
         return 1
 }
+
 # Copy a real kernel vmlinux into the flash directory if available
 copy_kernel_vmlinux_artifact() {
         local out_dir="$1"
@@ -701,11 +558,6 @@ build_targets_set "$TARGETS_FILE"
 validate_targets_exist "$TARGETS_FILE"
 
 # ---- Resolve inputs / downloads ---------------------------------------------
-if [[ "$BUILD_RB1" == "true" && -z "$U_BOOT_RB1" ]]; then
-        echo "ERROR: --u-boot-rb1 is required when --build-rb1=true" >&2
-        exit 13
-fi
-
 if [[ -n "$ESP_VFAT" ]]; then
         ESP_VFAT="$(resolve_maybe_relative_to_artifactdir "$ESP_VFAT")" || {
                 echo "ERROR: --esp-vfat not found: $ESP_VFAT" >&2
@@ -801,7 +653,7 @@ create_fit_dtb_vfat_artifacts() {
         # Always create the generic multi-dtb image
         vfat_names+=("dtb-multi-dtb-image.vfat")
 
-        # Add board-specific alias if needed
+        # Add board-specific alias
         case "$board_name" in
                 *"-vision-kit")
                         board_base="${board_name%-vision-kit}"
@@ -863,10 +715,9 @@ create_legacy_dtb_vfat_from_tar() {
 normalize_board_base() {
     local board="$1"
     case "$board" in
-        qcs6490-rb3gen2-vision-kit)    echo "qcs6490-rb3gen2" ;;
-        qcs6490-rb3gen2-core-kit)      echo "qcs6490-rb3gen2" ;;
+        qcs6490-rb3gen2-vision-kit)     echo "qcs6490-rb3gen2" ;;
+        qcs6490-rb3gen2-core-kit)       echo "qcs6490-rb3gen2" ;;
         qcs6490-rb3gen2-industrial-kit) echo "qcs6490-rb3gen2" ;;
-        *) echo "$board" ;;
     esac
 }
 
@@ -879,7 +730,6 @@ for ((i=0; i<BOARD_COUNT; i++)); do
     platforms="${BOARD_PLATFORMS[i]}"
     dtb="${BOARD_DTB[i]}"
     cdt_board_file="${CDT_BOARD_FILE[i]}"
-    uboot_file="${BOARD_UBOOT_FILE[i]}"
 
     artifact_src=""
     resolved_dtb=""
@@ -893,7 +743,6 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             echo "  Platforms     : $platforms"
             echo "  DTB           : $dtb"
             echo "  CDT file      : ${cdt_board_file:-<none>}"
-            echo "  U-Boot file   : ${uboot_file:-<none>}"
         } >&2
     fi
 
@@ -972,7 +821,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         [[ -n "$ESP_VFAT"    ]] && esp_base="$(basename "$ESP_VFAT")"
         [[ -n "$ROOTFS_EXT4" ]] && rootfs_base="$(basename "$ROOTFS_EXT4")"
 
-	mkdir -p "${BUILD_DIR}/ptool/${platform}"
+        mkdir -p "${BUILD_DIR}/ptool/${platform}"
         cp --preserve=mode,timestamps -v "$artifact_src" "${BUILD_DIR}/ptool/${platform}/dtb.bin"
         dtb_filename="dtb.bin"
         if [[ -n "$DTB_BIN_SRC" ]]; then
@@ -992,7 +841,6 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         dbg "     rootfs_base               : ${rootfs_base:-<none>}"
         dbg "     CDT board file            : ${cdt_board_file:-<none>}"
         dbg "     resolved DTB              : ${resolved_dtb:-<none>}"
-        dbg "     DTB base                  : ${dtb_base:-<none>}"
         dbg "     QCOM_PTOOL_DIR            : ${QCOM_PTOOL_DIR:-<none>}"
 
         # Generate ptool layout ONCE per platform
@@ -1020,15 +868,6 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             "$flash_dir"/disk_type 2>/dev/null || true
 
         copy_boot_binaries_filtered "${BUILD_DIR}/${name}_boot-binaries" "$flash_dir"
-
-        if [[ -n "$uboot_file" ]]; then
-            uboot_resolved="$(resolve_maybe_relative_to_artifactdir "$uboot_file")"
-            if [[ -f "$uboot_resolved" ]]; then
-                cp --preserve=mode,timestamps -v "$uboot_resolved" "$flash_dir/boot.img"
-            else
-                echo "WARNING: U-Boot file not found: $uboot_file (resolved: $uboot_resolved)"
-            fi
-        fi
 
         if [[ -n "$cdt_board_file" ]]; then
             if [[ -f "${BUILD_DIR}/${name}_cdt/${cdt_board_file}" ]]; then
@@ -1089,7 +928,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
                 rm -f "$main_vfat"
                 create_legacy_dtb_vfat_from_tar "$dtb" "$main_vfat"
 
-                # Board-specific legacy variants
+                # Board-specific legacy variants for vision-kit
                 if [[ "$name" == "qcs6490-rb3gen2-vision-kit" ]]; then
                     for variant in industrial-mezzanine vision-mezzanine; do
                         var_base="${main_base}-${variant}"
