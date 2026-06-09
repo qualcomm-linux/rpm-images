@@ -11,9 +11,82 @@ fi
 QCOW2="$1"
 OUTDIR="${2:-output}"
 
-for cmd in qemu-img parted dd truncate awk sort stat hexdump; do
+for cmd in qemu-img parted dd truncate awk sort stat hexdump mkfs.vfat mcopy; do
   command -v "$cmd" >/dev/null || { echo "Missing required command: $cmd"; exit 1; }
 done
+
+# UFS devices use 4096-byte logical sectors.  The Linux FAT driver requires
+# BPB bytes-per-sector >= device logical block size, so an image built with
+# the default 512-byte sectors will fail to mount on UFS with:
+#   "FAT: logical sector size too small for device (logical sector size = 512)"
+# This function rebuilds the FAT image in-place with 4096-byte sectors while
+# preserving every file already present in the image.
+EFI_SECTOR_SIZE=4096
+reformat_efi_for_ufs() {
+  local img="$1"
+
+  # Read current BPB bytes-per-sector (offset 11, 2 bytes LE)
+  local cur_bps
+  cur_bps=$(dd if="$img" bs=1 skip=11 count=2 2>/dev/null | hexdump -e '1/2 "%u\n"')
+  if [[ "$cur_bps" -eq "$EFI_SECTOR_SIZE" ]]; then
+    echo "[*] EFI image already has ${EFI_SECTOR_SIZE}-byte sectors — skipping reformat"
+    return 0
+  fi
+
+  echo "[*] Reformatting EFI image: ${cur_bps}-byte -> ${EFI_SECTOR_SIZE}-byte sectors (UFS)"
+
+  local img_size img_kib tmpdir
+  img_size=$(stat -c '%s' "$img")
+  img_kib=$(( img_size / 1024 ))
+  tmpdir=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmpdir'" RETURN
+
+  # Preserve the original FAT volume serial (4 bytes at BPB offset 67, LE).
+  # Linux exposes this as the partition UUID in /dev/disk/by-uuid (format HI-LO)
+  # and osbuild writes it into /etc/fstab.  mkfs.vfat assigns a new random
+  # serial, which would make the fstab UUID stale and prevent /boot/efi from
+  # mounting.  We read the original bytes and patch them back after mkfs.vfat.
+  local orig_serial_hex
+  orig_serial_hex=$(dd if="$img" bs=1 skip=67 count=4 2>/dev/null | hexdump -e '4/1 "%02x"')
+  echo "[*] Preserving original FAT volume serial: ${orig_serial_hex}"
+
+  export MTOOLS_SKIP_CHECK=1
+
+  # Stage 1: copy all files out of the existing image recursively
+  mcopy -vsmn -i "$img" '::*' "$tmpdir/" 2>/dev/null || true
+
+  # Stage 2: recreate the image with 4096-byte sectors (same total size).
+  # mkfs.vfat -C refuses to overwrite an existing file, so write to a temp
+  # path then atomically replace the original.
+  local new_img="${img}.reformat.$$"
+  mkfs.vfat -S "$EFI_SECTOR_SIZE" -F 32 -n "ESP" -C "$new_img" "$img_kib"
+  mv -f "$new_img" "$img"
+
+  # Stage 2b: restore the original volume serial at BPB offset 67 so that
+  # /dev/disk/by-uuid/<UUID> still matches what osbuild wrote into /etc/fstab.
+  printf "\\x${orig_serial_hex:0:2}\\x${orig_serial_hex:2:2}\\x${orig_serial_hex:4:2}\\x${orig_serial_hex:6:2}" \
+    | dd of="$img" bs=1 seek=67 count=4 conv=notrunc 2>/dev/null
+
+  # Stage 3: copy files back preserving directory structure
+  if [[ -n "$(ls -A "$tmpdir" 2>/dev/null)" ]]; then
+    mcopy -vsmp -i "$img" "$tmpdir"/* ::/ 2>/dev/null || true
+  fi
+
+  # Verify new BPB sector size and that the serial was restored
+  local new_bps new_serial_hex
+  new_bps=$(dd if="$img" bs=1 skip=11 count=2 2>/dev/null | hexdump -e '1/2 "%u\n"')
+  new_serial_hex=$(dd if="$img" bs=1 skip=67 count=4 2>/dev/null | hexdump -e '4/1 "%02x"')
+  if [[ "$new_bps" -ne "$EFI_SECTOR_SIZE" ]]; then
+    echo "[!] Reformat verification failed: BPB bytes-per-sector = $new_bps (expected $EFI_SECTOR_SIZE)"
+    exit 1
+  fi
+  if [[ "$new_serial_hex" != "$orig_serial_hex" ]]; then
+    echo "[!] Volume serial restore failed: got $new_serial_hex (expected $orig_serial_hex)"
+    exit 1
+  fi
+  echo "[*] EFI image reformatted successfully (${EFI_SECTOR_SIZE}-byte sectors, UUID preserved)"
+}
 
 mkdir -p "$OUTDIR"
 
@@ -78,6 +151,12 @@ ROOT_PART=$(echo "$PARTED_OUT" \
 extract_part_aligned "$EFI_PART"  "$OUTDIR/efi.bin"   || { echo "[!] EFI partition not found"; exit 1; }
 extract_part_aligned "$ROOT_PART" "$OUTDIR/rootfs.img" || { echo "[!] rootfs partition not found"; exit 1; }
 
+# Reformat the EFI image with 4096-byte sectors so it mounts on UFS devices.
+# osbuild produces FAT32 with 512-byte BPB sectors (standard PC default), but
+# the QCS6490 UFS has 4096-byte logical blocks and the Linux FAT driver rejects
+# images where BPB bytes-per-sector < device logical block size.
+reformat_efi_for_ufs "$OUTDIR/efi.bin"
+
 # -----------------------------
 # Sanity checks (no mount)
 # -----------------------------
@@ -93,6 +172,13 @@ fi
 EFI_SIG=$(dd if="$OUTDIR/efi.bin" bs=1 skip=510 count=2 2>/dev/null | hexdump -e '2/1 "%02x"')
 if [[ "$EFI_SIG" != "55aa" ]]; then
   echo "[!] EFI sanity failed: missing 0x55AA boot signature (got $EFI_SIG)"
+  exit 1
+fi
+
+# Verify BPB bytes-per-sector matches UFS requirement
+EFI_BPS=$(dd if="$OUTDIR/efi.bin" bs=1 skip=11 count=2 2>/dev/null | hexdump -e '1/2 "%u\n"')
+if [[ "$EFI_BPS" -ne "$EFI_SECTOR_SIZE" ]]; then
+  echo "[!] EFI sanity failed: BPB bytes-per-sector=$EFI_BPS (expected $EFI_SECTOR_SIZE for UFS)"
   exit 1
 fi
 
@@ -128,7 +214,7 @@ fi
 
 echo
 echo "[✓] SUCCESS"
-echo "    EFI    : $OUTDIR/efi.bin    (signature ok)"
+echo "    EFI    : $OUTDIR/efi.bin    (signature ok, ${EFI_SECTOR_SIZE}-byte sectors)"
 echo "    rootfs : $OUTDIR/rootfs.img ($ROOT_FS)"
 echo
-echo "[✓] Images are FLASHABLE AS-IS"
+echo "[✓] Images are FLASHABLE AS-IS (UFS 4K-sector compatible)"
