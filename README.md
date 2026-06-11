@@ -7,9 +7,7 @@ Generates CentOS Stream 10 (aarch64) images for Qualcomm platforms.
 ## Features
 
 - Custom Linux kernel compilation (QCOM kernels, linux-next, upstream)
-- DTB and FIT multi-DTB handling
 - CentOS Stream 10 OS image generation using **osbuild / image-builder**
-- FIT image generation for multi-board boot flows (`fit_build.py`)
 - Board-specific flash artifact generation (`generate_flat_build.sh`)
 
 ---
@@ -64,10 +62,7 @@ sudo apt install podman python3 git curl unzip dosfstools mtools
 │  Phase 3: Flash Artifact Extraction                             │
 │  └─→ extract_flash_artifacts.sh                                 │
 │                                                                 │
-│  Phase 4: FIT DTB Image Creation (recommended)                  │
-│  └─→ fit_build.py                                               │
-│                                                                 │
-│  Phase 5: Board-Specific Flash Packages                         │
+│  Phase 4: Board-Specific Flash Packages                         │
 │  └─→ generate_flat_build.sh                                     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -206,62 +201,11 @@ build/output/flashimages/
 
 ---
 
-### Phase 4: FIT DTB Image Creation (Recommended)
-
-`fit_build.py` builds a 4 MB VFAT image (`dtb.bin`) containing
-`qclinux_fit.img` — the FIT image expected by the Qualcomm UEFI
-(`DtPlatformLoadDtbBlob`).
-
-**From a kernel RPM** (recommended — matches the kernel in the rootfs):
-```bash
-python3 scripts/fit_build.py \
-  work/linux/rpmbuild/RPMS/aarch64/kernel-<version>.aarch64.rpm \
-  --outdir build/output/fit/ \
-  -v
-```
-
-**From a DTB directory**:
-```bash
-python3 scripts/fit_build.py \
-  work/linux/arch/arm64/boot/dts/ \
-  --outdir build/output/fit/ \
-  -v
-```
-
-**Output**
-```
-build/output/fit/
-└── dtb.bin    # 4 MB VFAT image containing qclinux_fit.img
-```
-
-> `fit_build.py` clones `qcom-dtb-metadata` on first run (requires internet
-> access) and caches it under `--outdir`. Subsequent runs reuse the cache.
-
----
-
-### Phase 5: Board-Specific Flash Package Generation
+### Phase 4: Board-Specific Flash Package Generation
 
 `generate_flat_build.sh` downloads Qualcomm boot binaries and CDT files,
 generates GPT partition tables via `qcom-ptool`, and assembles a complete
 per-board flash directory ready for QDL / PCAT.
-
-#### Recommended: FIT DTB mode
-
-Use `--dtb-bin` with the `dtb.bin` produced by `fit_build.py`. This places
-`qclinux_fit.img` in the dtb_a/dtb_b partitions so the UEFI can load it
-directly.
-
-```bash
-./scripts/generate_flat_build.sh \
-  --dtb-bin     build/output/fit/dtb.bin \
-  --esp-vfat    build/output/flashimages/efi.bin \
-  --rootfs-ext4 build/output/flashimages/rootfs.img
-```
-
-#### Legacy DTB mode (fallback)
-
-Use `--dtbs-tar` when a FIT image is not available. The firmware will fall back
-to legacy MultiDtb selection.
 
 ```bash
 ./scripts/generate_flat_build.sh \
