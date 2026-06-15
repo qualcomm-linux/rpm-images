@@ -79,7 +79,7 @@ jobs:
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
       - name: Download kernel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-artifacts
           path: kernel-artifacts
@@ -123,7 +123,7 @@ jobs:
         uses: ./.github/actions/install-host-deps
 
       - name: Download kernel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-artifacts
           path: kernel-artifacts
@@ -180,7 +180,7 @@ jobs:
         uses: ./.github/actions/install-host-deps
 
       - name: Download qcow2 image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: qcow2-image
           path: build/output
@@ -215,19 +215,19 @@ jobs:
         uses: ./.github/actions/install-host-deps
 
       - name: Download flashimages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: flashimages
           path: build/output/flashimages
 
       - name: Download qcow2 image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: qcow2-image
           path: build/output
 
       - name: Download kernel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-artifacts
           path: kernel-artifacts
@@ -297,7 +297,7 @@ jobs:
       url: ${{ steps.url.outputs.url }}
     steps:
       - name: Download build URL
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build_url
       - id: url
