@@ -47,7 +47,7 @@ jobs:
             hostname which
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build kernel + dtbs.tar.gz + RPMs
         run: |
@@ -117,7 +117,7 @@ jobs:
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
@@ -174,7 +174,7 @@ jobs:
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
@@ -209,7 +209,7 @@ jobs:
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
