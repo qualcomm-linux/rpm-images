@@ -56,11 +56,13 @@ sudo apt install podman python3 git curl unzip dosfstools mtools rpm dtc u-boot-
 │  Phase 1: Kernel Compilation (RPM)                              │
 │  └─→ build_binrpm_pkg.py                                        │
 │                                                                 │
-│  Phase 2: OS Image Generation (osbuild)                         │
-│  └─→ image-builder-cli (qcow2)                                  │
+│  Phase 2: Manifest Generation                                   │
+│  └─→ image-builder-cli --with-manifest  (resolves RPM SHAs)    │
+│  └─→ patch_manifest.py                  (injects efi/rootfs     │
+│                                          pipelines)             │
 │                                                                 │
-│  Phase 3: Flash Artifact Extraction                             │
-│  └─→ extract_flash_artifacts.sh                                 │
+│  Phase 3: Image Build (osbuild)                                 │
+│  └─→ osbuild → efi.bin + rootfs.img  (no qcow2, no extraction) │
 │                                                                 │
 │  Phase 4: Board-Specific Flash Packages                         │
 │  └─→ generate_flat_build.sh                                     │
@@ -87,11 +89,11 @@ sudo apt install podman python3 git curl unzip dosfstools mtools rpm dtc u-boot-
 │   │       ├── rootfs.img              # Root filesystem (EXT4)
 │   │       └── dtb.bin                 # DTB VFAT (FIT or legacy)
 │   └── output/
-│       ├── centos-10-qcow2-aarch64.qcow2
-│       ├── centos-10-qcow2-aarch64.qcow2.md5
 │       ├── flashimages/
-│       │   ├── efi.bin                 # Extracted EFI partition
-│       │   └── rootfs.img              # Extracted root filesystem
+│       │   ├── efi-image/
+│       │   │   └── efi.bin             # EFI partition (FAT32, 4K sectors)
+│       │   └── rootfs-image/
+│       │       └── rootfs.img          # Root filesystem (EXT4)
 │       └── fit/
 │           └── dtb.bin                 # FIT DTB image (4 MB VFAT)
 └── work/linux/
@@ -137,67 +139,54 @@ work/linux/
 
 ---
 
-### Phase 2: OS Image Generation
+### Phase 2: Manifest Generation
 
-**Tool**: `image-builder-cli` (osbuild)
+`make manifest` runs two steps:
 
-```bash
-sudo podman run --rm --privileged \
-  --net=host \
-  -v "$(pwd)/build/output:/output:rw" \
-  -v "$(pwd)/build/logs:/var/log:rw" \
-  -v "$(pwd)/configs/cs-stream-console-aarch64.toml:/blueprint.toml:ro" \
-  ghcr.io/osbuild/image-builder-cli:latest build \
-  --verbose \
-  --distro centos-10 \
-  --arch aarch64 \
-  --extra-repo https://mirror.stream.centos.org/10-stream/BaseOS/aarch64/os/ \
-  --extra-repo https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/ \
-  --extra-repo https://mirror.stream.centos.org/10-stream/CRB/aarch64/os/ \
-  --blueprint /blueprint.toml \
-  qcow2 \
-  --output-dir /output \
-  2>&1 | tee build/build-cs-stream-console.log
-```
+1. **`image-builder-cli --with-manifest`** — depsolves the blueprint against
+   CentOS Stream 10 (BaseOS + AppStream + CRB) and optionally a local kernel
+   RPM repo.  Writes a raw osbuild v2 manifest with every RPM's SHA-256
+   checksum and download URL baked in.
 
-To include locally built kernel RPMs, add an `--extra-repo` pointing to a local HTTP server serving the RPMs:
+2. **`scripts/patch_manifest.py`** — replaces the `image`/`qcow2` pipelines
+   in the raw manifest with `efi-image` and `rootfs-image` pipelines that
+   emit raw images directly.  Writes `configs/osbuild-pipeline.json`.
 
 ```bash
-# Serve local RPMs (run in a separate terminal)
+# Serve your locally built kernel RPMs (separate terminal)
 python3 -m http.server 8000 --directory work/linux/rpmbuild/RPMS/aarch64/
 
-# Add to the podman run command above:
-  --extra-repo http://host-ip:8000/
+# Generate the manifest
+make manifest LOCAL_RPMS=http://10.147.152.194:8000/
+
+# Without a custom kernel (uses stock CentOS kernel):
+make manifest
 ```
 
-**Output**
-```
-build/output/
-├── centos-10-qcow2-aarch64.qcow2
-└── centos-10-qcow2-aarch64.qcow2.md5
-```
+> `configs/osbuild-pipeline.json` is **not committed** to the repo — it
+> embeds SHA-256 checksums tied to your specific kernel RPM build.  Every
+> developer generates their own copy.
 
 ---
 
-### Phase 3: Flash Artifact Extraction
+### Phase 3: Image Build (osbuild)
 
-Extract the EFI System Partition and root filesystem from the qcow2 image.
+`make image` runs osbuild inside the image-builder-cli container against the
+manifest.  osbuild downloads every RPM from the URL baked into the manifest
+and produces `efi.bin` and `rootfs.img` directly — no qcow2, no extraction.
 
 ```bash
-scripts/extract_flash_artifacts.sh \
-  build/output/centos-10-qcow2-aarch64.qcow2 \
-  build/output/flashimages
+make image
 ```
 
 **Outputs**
 ```
 build/output/flashimages/
-├── efi.bin       # EFI System Partition (VFAT, contains GRUB + kernel)
-└── rootfs.img    # Root filesystem (EXT4)
+├── efi-image/
+│   └── efi.bin       # EFI partition (FAT32, 4096-byte sectors for UFS)
+└── rootfs-image/
+    └── rootfs.img    # Root filesystem (EXT4)
 ```
-
-> **Critical**: `efi.bin` and `rootfs.img` must always be extracted from the
-> **same** qcow2 image.
 
 ---
 
