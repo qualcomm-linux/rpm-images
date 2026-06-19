@@ -18,14 +18,53 @@ done
 mkdir -p "$OUTDIR"
 
 RAW="$(mktemp --suffix=.raw)"
-cleanup() { rm -f "$RAW"; }
+LOOP_DEV=""
+cleanup() {
+  if [[ -n "$LOOP_DEV" ]]; then
+    losetup -d "$LOOP_DEV" >/dev/null 2>&1 || true
+  fi
+  rm -f "$RAW"
+}
 trap cleanup EXIT
 
 echo "[*] Converting qcow2 → raw"
 qemu-img convert -f qcow2 -O raw "$QCOW2" "$RAW"
 
 echo "[*] Reading partition table"
-PARTED_OUT=$(parted -s "$RAW" unit B print)
+PARTED_TARGET="$RAW"
+set +e
+PARTED_OUT=$(parted -s "$PARTED_TARGET" unit B print 2>&1)
+PARTED_RC=$?
+set -e
+
+if [[ $PARTED_RC -ne 0 ]]; then
+  echo "$PARTED_OUT"
+
+  # Some images are partitioned for 4096-byte logical sectors (GPT header at
+  # byte offset 4096), which parted cannot parse directly from a regular file.
+  # Retry through a read-only loop device with 4K logical sectors.
+  if [[ "$PARTED_OUT" == *"unrecognised disk label"* ]]; then
+    command -v losetup >/dev/null || {
+      echo "[!] Failed to parse partition table and 'losetup' is missing"
+      exit 1
+    }
+    [[ $EUID -eq 0 ]] || {
+      echo "[!] Failed to parse partition table from raw file"
+      echo "    This image likely uses 4096-byte logical sectors."
+      echo "    Re-run as root (or with sudo) to enable 4K loop-device probing."
+      exit 1
+    }
+
+    echo "[*] Retrying partition table read via 4K-sector loop device"
+    LOOP_DEV=$(losetup --find --show --read-only --sector-size 4096 "$RAW")
+    PARTED_TARGET="$LOOP_DEV"
+    PARTED_OUT=$(parted -s "$PARTED_TARGET" unit B print)
+  else
+    echo "[!] Failed to read partition table"
+    exit 1
+  fi
+fi
+
 echo "$PARTED_OUT"
 
 # --- choose a safe, fast block size ---
