@@ -72,3 +72,6 @@ enabled = ["sshd", "NetworkManager"]
 name = "qcom"
 password = "qcom"
 groups = ["wheel", "adm", "audio", "render", "users", "video"]
+
+[customizations.disk]
+sector_size = 4096
