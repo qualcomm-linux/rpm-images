@@ -69,7 +69,7 @@ $(QCOW2): $(BLUEPRINT)
 image: $(QCOW2)
 
 $(FLASHIMAGES)/.extracted: $(QCOW2)
-	scripts/extract_flash_artifacts.sh $< $(FLASHIMAGES)
+	sudo scripts/extract_flash_artifacts.sh $< $(FLASHIMAGES)
 	@touch $@
 
 $(EFI_BIN) $(ROOTFS_IMG): $(FLASHIMAGES)/.extracted
