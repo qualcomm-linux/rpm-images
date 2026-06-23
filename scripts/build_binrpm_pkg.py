@@ -7,7 +7,6 @@
 #
 # Outputs remain in default kernel locations:
 #   - Image:  arch/arm64/boot/Image
-#   - DTBs:   arch/arm64/boot/dts/**/*.dtb
 #   - Modules: *.ko scattered in build tree (until modules_install)
 #
 
@@ -17,7 +16,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import tarfile
 from typing import Optional
 from pathlib import Path
 
@@ -95,33 +93,6 @@ def ensure_cross_compiler(cross_prefix: Optional[str], arch: str):
     cc = f"{cross_prefix}gcc"
     if shutil.which(cc) is None:
         fatal(f"Cross compiler not found: {cc}")
-def create_dtbs_tarball(linux_dir: Path, arch: str = "arm64") -> Path:
-    """
-    Create build/out/dtbs.tar.gz from arch/arm64/boot/dts/**/*.dtb
-    """
-    dts_dir = linux_dir / "arch" / arch / "boot" / "dts"
-    if not dts_dir.exists():
-        fatal(f"DTB directory does not exist: {dts_dir}")
-
-    dtb_files = sorted(dts_dir.rglob("*.dtb"))
-    if not dtb_files:
-        fatal("No DTB files found – kernel build likely failed.")
-
-    out_dir = linux_dir / "build" / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    tar_path = out_dir / "dtbs.tar.gz"
-    log_i(f"Creating DTB tarball: {tar_path}")
-
-    with tarfile.open(tar_path, "w:gz") as tar:
-        for dtb in dtb_files:
-            # Preserve layout relative to dts/
-            arcname = dtb.relative_to(dts_dir)
-            tar.add(dtb, arcname=arcname)
-            log_i(f"  + {arcname}")
-
-    return tar_path
-
 def main():
     parser = argparse.ArgumentParser(
         description="Build kernel in-place (Image + modules + dtbs) and run make binrpm-pkg"
@@ -239,15 +210,10 @@ def main():
     log_i("Building RPMs via: make binrpm-pkg")
     run(make_base + ["binrpm-pkg"], cwd=linux_dir, env=env)
 
-    # 4) package DTBs into tarball
-    dtbs_tar = create_dtbs_tarball(linux_dir, args.arch)
-
     # Report locations 
     boot_dir = linux_dir / "arch" / "arm64" / "boot"
     log_i("Done. Outputs kept in default kernel locations:")
     log_i(f"  Image : {boot_dir / 'Image'}")
-    log_i(f"  DTBs  : {boot_dir / 'dts'} (search *.dtb under here)")
-    log_i(f"  DTBs tarball : {dtbs_tar}")
     log_i(f"  Modules (*.ko): scattered under source tree (find . -name '*.ko')")
     log_i(f"  RPMs  : {linux_dir / 'rpmbuild' / 'RPMS'} (and SRPMS under rpmbuild/SRPMS)")
 

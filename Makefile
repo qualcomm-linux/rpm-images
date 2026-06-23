@@ -28,9 +28,6 @@ LOCAL_KERNEL_REPO ?=
 EXTRA_IMAGE_BUILDER_OPTS ?=
 SBOM              ?= 1
 
-# DTBS_TAR: path to the DTB tarball produced by the kernel build (required).
-DTBS_TAR ?=
-
 ARTIFACTDIR      ?= build/out
 TARGET_BOARDS    ?= qcs6490-rb3gen2-vision-kit
 EXTRA_FLASH_OPTS ?=
@@ -41,6 +38,7 @@ QCOW2       := $(BUILD_OUTPUT)/centos-10-qcow2-$(ARCH).qcow2
 FLASHIMAGES := $(BUILD_OUTPUT)/flashimages
 EFI_BIN     := $(FLASHIMAGES)/efi.bin
 ROOTFS_IMG  := $(FLASHIMAGES)/rootfs.img
+DTBS_TAR    := $(FLASHIMAGES)/dtbs.tar.gz
 
 .PHONY: all image flash-artifacts flash clean clean-downloads help
 
@@ -74,16 +72,11 @@ $(FLASHIMAGES)/.extracted: $(QCOW2)
 	sudo scripts/extract_flash_artifacts.sh $< $(FLASHIMAGES)
 	@touch $@
 
-$(EFI_BIN) $(ROOTFS_IMG): $(FLASHIMAGES)/.extracted
+$(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR): $(FLASHIMAGES)/.extracted
 
-flash-artifacts: $(EFI_BIN) $(ROOTFS_IMG)
+flash-artifacts: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
 
-flash: $(EFI_BIN) $(ROOTFS_IMG)
-	@[ -n "$(DTBS_TAR)" ] || { \
-	  echo "ERROR: DTBS_TAR is required."; \
-	  echo "  Generate it from your kernel tree."; \
-	  exit 1; \
-	}
+flash: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
 	./scripts/generate_flat_build.sh \
 	  --dtbs-tar=$(DTBS_TAR) \
 	  --esp-vfat=$(EFI_BIN) \
@@ -113,7 +106,7 @@ help:
 	@echo "  help            Show this help"
 	@echo ""
 	@echo "Variables (override on command line):"
-	@echo "  DTBS_TAR             DTB tarball (required; no default)"
+	@echo "  DTBS_TAR             DTB tarball (auto: $(FLASHIMAGES)/dtbs.tar.gz from rootfs)"
 	@echo "  BLUEPRINT            Image blueprint TOML (default: $(BLUEPRINT))"
 	@echo "  DISTRO               OS distro for image-builder (default: $(DISTRO))"
 	@echo "  ARCH                 Target architecture (default: $(ARCH))"

@@ -169,5 +169,57 @@ echo
 echo "[✓] SUCCESS"
 echo "    EFI    : $OUTDIR/efi.bin    (signature ok)"
 echo "    rootfs : $OUTDIR/rootfs.img ($ROOT_FS)"
+echo "    dtbs   : $OUTDIR/dtbs.tar.gz (from rootfs /boot/dtb-*/)"
 echo
 echo "[✓] Images are FLASHABLE AS-IS"
+
+# -----------------------------
+# Extract DTBs from rootfs
+# -----------------------------
+
+echo "[*] Extracting DTBs from rootfs.img → $OUTDIR/dtbs.tar.gz"
+
+DTB_STAGING="$(mktemp -d)"
+
+extract_dtbs_from_ext4() {
+  local img="$1" staging="$2"
+  local found=0
+
+  command -v debugfs >/dev/null 2>&1 || return 0
+
+  # List dtb-* directories under /boot
+  local boot_entries
+  boot_entries="$(debugfs -R "ls -p /boot" "$img" 2>/dev/null \
+    | awk -F'/' '{print $6}' | grep -E '^dtb-' | tr -d '\r' || true)"
+
+  local tmp_dtb
+  tmp_dtb="$(mktemp -d)"
+
+  for dtb_dir in $boot_entries; do
+    # rdump recursively dumps the entire dtb-<ver>/ tree to tmp_dtb/
+    debugfs -R "rdump /boot/${dtb_dir} ${tmp_dtb}" "$img" 2>/dev/null || true
+    # Move contents up one level (strip dtb-<ver>/ prefix) into staging
+    if [[ -d "${tmp_dtb}/${dtb_dir}" ]]; then
+      cp -a "${tmp_dtb}/${dtb_dir}/." "${staging}/"
+      found=1
+    fi
+    rm -rf "${tmp_dtb:?}/${dtb_dir}"
+  done
+
+  rm -rf "$tmp_dtb"
+  echo "$found"
+}
+
+if [[ "$ROOT_FS" == "ext4" ]]; then
+  found="$(extract_dtbs_from_ext4 "$OUTDIR/rootfs.img" "$DTB_STAGING")"
+  if [[ "$found" -eq 0 ]]; then
+    echo "[!] No DTBs found under /boot/dtb-*/ in rootfs — skipping dtbs.tar.gz"
+  else
+    tar -czf "$OUTDIR/dtbs.tar.gz" -C "$DTB_STAGING" .
+    echo "[✓] DTBs packed: $OUTDIR/dtbs.tar.gz"
+  fi
+else
+  echo "[!] DTB extraction only supported for ext4 rootfs (got $ROOT_FS) — skipping dtbs.tar.gz"
+fi
+
+rm -rf "$DTB_STAGING"
