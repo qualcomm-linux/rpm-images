@@ -49,7 +49,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Build kernel + dtbs.tar.gz + RPMs
+      - name: Build kernel RPMs
         run: |
           set -euo pipefail
           python3 scripts/build_binrpm_pkg.py \
@@ -63,7 +63,6 @@ jobs:
           path: |
             linux/rpmbuild/RPMS/aarch64/kernel-*.rpm
             linux/rpmbuild/SRPMS/kernel-*.src.rpm
-            linux/build/out/dtbs.tar.gz
           retention-days: 7
 
       - name: Hand workspace back to runner user
@@ -88,9 +87,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p kernel-rpms
-          cp -a kernel-artifacts/rpmbuild/RPMS/aarch64/kernel-*.rpm kernel-rpms/ 2>/dev/null || true
-          cp -a kernel-artifacts/rpmbuild/SRPMS/kernel-*.src.rpm    kernel-rpms/ 2>/dev/null || true
-          cp -a kernel-artifacts/build/out/dtbs.tar.gz             kernel-rpms/ 2>/dev/null || true
+          cp -a kernel-artifacts/RPMS/aarch64/kernel-*.rpm kernel-rpms/ 2>/dev/null || true
+          cp -a kernel-artifacts/SRPMS/kernel-*.src.rpm    kernel-rpms/ 2>/dev/null || true
           (cd kernel-rpms && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
 
       - name: Publish kernel RPMs (S3)
@@ -132,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p local-rpms build/output build/logs
-          cp kernel-artifacts/rpmbuild/RPMS/aarch64/*.rpm local-rpms/
+          cp kernel-artifacts/RPMS/aarch64/*.rpm local-rpms/
 
           createrepo_c local-rpms/
 
@@ -200,6 +198,7 @@ jobs:
           path: |
             build/output/flashimages/efi.bin
             build/output/flashimages/rootfs.img
+            build/output/flashimages/dtbs.tar.gz
           retention-days: 7
 
 
@@ -236,7 +235,7 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/generate_flat_build.sh \
-            --dtbs-tar=kernel-artifacts/build/out/dtbs.tar.gz \
+            --dtbs-tar=build/output/flashimages/dtbs.tar.gz \
             --esp-vfat=build/output/flashimages/efi.bin \
             --rootfs-ext4=build/output/flashimages/rootfs.img \
             --target-boards=qcs6490-rb3gen2-vision-kit \
