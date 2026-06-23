@@ -188,7 +188,7 @@ jobs:
       - name: Extract flash artifacts
         run: |
           set -euo pipefail
-          scripts/extract_flash_artifacts.sh \
+          sudo scripts/extract_flash_artifacts.sh \
             build/output/centos-10-qcow2-aarch64.qcow2 \
             build/output/flashimages
 
