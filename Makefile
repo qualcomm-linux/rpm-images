@@ -26,6 +26,7 @@ EXTRA_REPOS   ?= \
 LOCAL_KERNEL_REPO ?=
 
 EXTRA_IMAGE_BUILDER_OPTS ?=
+SBOM              ?= 1
 
 # DTBS_TAR: path to the DTB tarball produced by the kernel build (required).
 DTBS_TAR ?=
@@ -63,6 +64,7 @@ $(QCOW2): $(BLUEPRINT)
 	  --blueprint /blueprint.toml \
 	  qcow2 \
 	  --output-dir /output \
+	  $(if $(SBOM),--with-sbom) \
 	  $(EXTRA_IMAGE_BUILDER_OPTS) \
 	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-console.log
 
@@ -121,3 +123,4 @@ help:
 	@echo "  ARTIFACTDIR          Flash package output directory (default: $(ARTIFACTDIR))"
 	@echo "  EXTRA_FLASH_OPTS     Extra flags for generate_flat_build.sh"
 	@echo "  EXTRA_IMAGE_BUILDER_OPTS  Extra flags for image-builder-cli"
+	@echo "  SBOM                 Generate SBOM; pass --with-sbom to image-builder-cli (default: 1)"
