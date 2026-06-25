@@ -25,6 +25,13 @@ EXTRA_REPOS   ?= \
 #   make image LOCAL_KERNEL_REPO=http://<host-ip>:8000/
 LOCAL_KERNEL_REPO ?=
 
+# Optional: directory of locally-built kernel RPMs to feed into the image.
+# When set, createrepo metadata is generated and the directory is mounted into
+# the build container as a file:// dnf repo.
+# Example:
+#   make image LOCAL_RPMS_DIR=local-rpms
+LOCAL_RPMS_DIR ?=
+
 EXTRA_IMAGE_BUILDER_OPTS ?=
 SBOM              ?= 1
 
@@ -48,17 +55,20 @@ all: flash
 # Output: $(QCOW2)
 $(QCOW2): $(BLUEPRINT)
 	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS)
+	$(if $(LOCAL_RPMS_DIR),test -d $(LOCAL_RPMS_DIR)/repodata || createrepo_c $(LOCAL_RPMS_DIR)/)
 	podman run --rm --privileged \
 	  --net=host \
 	  -v "$(CURDIR)/$(BUILD_OUTPUT):/output:rw" \
 	  -v "$(CURDIR)/$(BUILD_LOGS):/var/log:rw" \
 	  -v "$(CURDIR)/$(BLUEPRINT):/blueprint.toml:ro" \
+	  $(if $(LOCAL_RPMS_DIR),-v "$(CURDIR)/$(LOCAL_RPMS_DIR):/local-rpms:ro") \
 	  $(IMAGE_BUILDER_IMAGE) build \
 	  --verbose \
 	  --distro $(DISTRO) \
 	  --arch $(ARCH) \
 	  $(EXTRA_REPOS) \
 	  $(if $(LOCAL_KERNEL_REPO),--extra-repo $(LOCAL_KERNEL_REPO)) \
+	  $(if $(LOCAL_RPMS_DIR),--extra-repo file:///local-rpms/) \
 	  --blueprint /blueprint.toml \
 	  qcow2 \
 	  --output-dir /output \
@@ -111,6 +121,7 @@ help:
 	@echo "  DISTRO               OS distro for image-builder (default: $(DISTRO))"
 	@echo "  ARCH                 Target architecture (default: $(ARCH))"
 	@echo "  LOCAL_KERNEL_REPO    URL of local kernel RPM HTTP server (default: unset)"
+	@echo "  LOCAL_RPMS_DIR       Dir of local kernel RPMs mounted as a file:// repo (default: unset)"
 	@echo "  TARGET_BOARDS        Boards to flash (default: $(TARGET_BOARDS))"
 	@echo "                       Use 'all' to build all supported boards"
 	@echo "  ARTIFACTDIR          Flash package output directory (default: $(ARTIFACTDIR))"
