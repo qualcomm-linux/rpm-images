@@ -5,7 +5,7 @@ on:
     outputs:
       artifacts_url:
         description: "URL to retrieve build artifacts"
-        value: ${{ jobs.create-output.outputs.url }}
+        value: ${{ jobs.build-and-flash.outputs.url }}
 
 permissions:
   contents: read
@@ -35,25 +35,13 @@ jobs:
           echo "Workspace owner: ${owner}"
           echo "WORKSPACE_OWNER=${owner}" >> "$GITHUB_ENV"
 
-      - name: Install kernel build dependencies
-        run: |
-          set -euo pipefail
-          dnf install -y \
-            git make gcc bc bison flex perl python3 \
-            openssl openssl-devel elfutils-libelf-devel elfutils-devel \
-            rpm-build rpmdevtools \
-            rsync tar gzip findutils diffutils coreutils \
-            kmod dwarves \
-            hostname which
-
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Build kernel RPMs
-        run: |
-          set -euo pipefail
-          python3 scripts/build_binrpm_pkg.py \
-            --qcom-6.18.y
+        uses: ./.github/actions/build-kernel-rpm
+        with:
+          kernel-ref: qcom-6.18.y
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v7
@@ -63,7 +51,7 @@ jobs:
           path: |
             linux/rpmbuild/RPMS/aarch64/kernel-*.rpm
             linux/rpmbuild/SRPMS/kernel-*.src.rpm
-          retention-days: 7
+          retention-days: 1
 
       - name: Hand workspace back to runner user
         if: always()
@@ -109,10 +97,12 @@ jobs:
           echo "[${kernel_url}](${kernel_url})" >> $GITHUB_STEP_SUMMARY
 
 
-  os-image:
-    name: Phase 2 - qcow2 OS image
+  build-and-flash:
+    name: Phase 2 - Image, extract & flash packages
     needs: [kernel-rpm]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    outputs:
+      url: ${{ steps.url.outputs.url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -126,127 +116,29 @@ jobs:
           name: kernel-artifacts
           path: kernel-artifacts
 
-      - name: Stage RPMs and build createrepo metadata
+      - name: Stage kernel RPMs
         run: |
           set -euo pipefail
-          mkdir -p local-rpms build/output build/logs
+          mkdir -p local-rpms
           cp kernel-artifacts/RPMS/aarch64/*.rpm local-rpms/
 
-          createrepo_c local-rpms/
-
-      - name: Build qcow2 with image-builder-cli
+      - name: Build image, extract, and assemble flash packages
         run: |
           set -euo pipefail
-          sudo HOME=/tmp podman run --rm --privileged \
-            -v "$(pwd)/build/output:/output:rw" \
-            -v "$(pwd)/build/logs:/var/log:rw" \
-            -v "$(pwd)/configs/cs-stream-console-aarch64.toml:/blueprint.toml:ro" \
-            -v "$(pwd)/local-rpms:/local-rpms:ro" \
-            ghcr.io/osbuild/image-builder-cli:latest build \
-            --verbose \
-            --distro centos-10 \
-            --arch aarch64 \
-            --extra-repo https://mirror.stream.centos.org/10-stream/BaseOS/aarch64/os/ \
-            --extra-repo https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/ \
-            --extra-repo https://mirror.stream.centos.org/10-stream/CRB/aarch64/os/ \
-            --extra-repo file:///local-rpms/ \
-            --blueprint /blueprint.toml \
-            qcow2 \
-            --output-dir /output \
-            2>&1 | tee build/logs/build-cs-stream-console.log
+          # `make flash` chains image -> flash-artifacts -> flash on a single
+          # disk, so no intermediate binaries need to be passed between jobs.
+          sudo HOME=/tmp make flash \
+            LOCAL_RPMS_DIR=local-rpms \
+            TARGET_BOARDS=qcs6490-rb3gen2-vision-kit \
+            EXTRA_FLASH_OPTS=--verbose=true
 
-      - name: Upload qcow2
-        uses: actions/upload-artifact@v7
-        with:
-          name: qcow2-image
-          if-no-files-found: error
-          path: |
-            build/output/centos-10-qcow2-aarch64.qcow2
-            build/output/centos-10-qcow2-aarch64.qcow2.md5
-          retention-days: 7
+          # make ran as root; hand the outputs back so later steps can read them.
+          sudo chown -R "$(id -u):$(id -g)" build
 
-
-  flash-extract:
-    name: Phase 3 - Extract efi.bin + rootfs.img
-    needs: os-image
-    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install host dependencies
-        uses: ./.github/actions/install-host-deps
-
-      - name: Download qcow2 image
-        uses: actions/download-artifact@v8
-        with:
-          name: qcow2-image
-          path: build/output
-
-      - name: Extract flash artifacts
-        run: |
-          set -euo pipefail
-          sudo scripts/extract_flash_artifacts.sh \
-            build/output/centos-10-qcow2-aarch64.qcow2 \
-            build/output/flashimages
-
-      - name: Upload flashimages
-        uses: actions/upload-artifact@v7
-        with:
-          name: flashimages
-          if-no-files-found: error
-          path: |
-            build/output/flashimages/efi.bin
-            build/output/flashimages/rootfs.img
-            build/output/flashimages/dtbs.tar.gz
-          retention-days: 7
-
-
-  flash-package:
-    name: Phase 4 - Per-board flash packages
-    needs: [flash-extract]
-    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install host dependencies
-        uses: ./.github/actions/install-host-deps
-
-      - name: Download flashimages
-        uses: actions/download-artifact@v8
-        with:
-          name: flashimages
-          path: build/output/flashimages
-
-      - name: Download qcow2 image
-        uses: actions/download-artifact@v8
-        with:
-          name: qcow2-image
-          path: build/output
-
-      - name: Download kernel artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: kernel-artifacts
-          path: kernel-artifacts
-
-      - name: Generate per-board flash packages
-        run: |
-          set -euo pipefail
-          ./scripts/generate_flat_build.sh \
-            --dtbs-tar=build/output/flashimages/dtbs.tar.gz \
-            --esp-vfat=build/output/flashimages/efi.bin \
-            --rootfs-ext4=build/output/flashimages/rootfs.img \
-            --target-boards=qcs6490-rb3gen2-vision-kit \
-            --verbose=true
-
-      - name: Stage artifacts for publishing
+      - name: Stage SBOMs and flash packages for publishing
         run: |
           set -euo pipefail
           mkdir -p rpm-artifacts
-          gzip -c build/output/centos-10-qcow2-aarch64.qcow2 \
-            > rpm-artifacts/centos-10-qcow2-aarch64.qcow2.gz
           for d in build/out/flash_*; do
             [ -d "$d" ] || continue
             board="$(basename "$d")"
@@ -263,43 +155,14 @@ jobs:
           destination: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ env.BUILD_ID }}/
           fileserver_url: ${{ env.FILESERVER_URL }}
 
-      - name: Upload flash packages
-        uses: actions/upload-artifact@v7
-        with:
-          name: flash-packages
-          if-no-files-found: error
-          path: rpm-artifacts/flash_*.tar.gz
-          retention-days: 7
-
       - name: Print download URL
+        id: url
         env:
           build_url: ${{ steps.upload_artifacts_s3.outputs.url }}
         run: |
-          echo "Downloads URL: ${build_url}"
-          echo "${build_url}" > build_url
-          echo "## Download URL" >> $GITHUB_STEP_SUMMARY
-          echo "[${build_url}](${build_url})" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload build URL
-        uses: actions/upload-artifact@v7
-        with:
-          name: build_url
-          path: build_url
-          retention-days: 7
-
-
-  create-output:
-    name: Publish artifacts URL
-    needs: flash-package
-    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
-    outputs:
-      url: ${{ steps.url.outputs.url }}
-    steps:
-      - name: Download build URL
-        uses: actions/download-artifact@v8
-        with:
-          name: build_url
-      - id: url
-        run: |
-          url="$(cat build_url 2>/dev/null || echo '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}')"
+          fallback='${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          url="${build_url:-$fallback}"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Downloads URL: ${url}"
+          echo "## Download URL" >> $GITHUB_STEP_SUMMARY
+          echo "[${url}](${url})" >> $GITHUB_STEP_SUMMARY
