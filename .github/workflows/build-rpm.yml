@@ -139,6 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p rpm-artifacts
+          find build/output -name '*.spdx.json' -exec cp -a {} rpm-artifacts/ \;
           for d in build/out/flash_*; do
             [ -d "$d" ] || continue
             board="$(basename "$d")"
