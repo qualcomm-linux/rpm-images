@@ -139,7 +139,31 @@ work/linux/
 
 ### Phase 2: OS Image Generation
 
-**Tool**: `image-builder-cli` (osbuild)
+**Tool**: `image-builder-cli` (osbuild), driven by the `Makefile`.
+
+```bash
+make image
+```
+
+To include locally built kernel RPMs, point `LOCAL_RPMS_DIR` at a directory of
+`.rpm` files. The Makefile runs `createrepo_c`, mounts the directory into the
+build container, and adds it as a `file://` dnf repo automatically:
+
+```bash
+cp work/linux/rpmbuild/RPMS/aarch64/*.rpm local-rpms/
+make image LOCAL_RPMS_DIR=local-rpms
+```
+
+Alternatively, serve the RPMs over HTTP and pass `LOCAL_KERNEL_REPO`:
+
+```bash
+# Serve local RPMs (run in a separate terminal)
+python3 -m http.server 8000 --directory work/linux/rpmbuild/RPMS/aarch64/
+make image LOCAL_KERNEL_REPO=http://host-ip:8000/
+```
+
+<details>
+<summary>Under the hood: the raw <code>image-builder-cli</code> invocation</summary>
 
 ```bash
 sudo podman run --rm --privileged \
@@ -160,15 +184,7 @@ sudo podman run --rm --privileged \
   2>&1 | tee build/build-cs-stream-console.log
 ```
 
-To include locally built kernel RPMs, add an `--extra-repo` pointing to a local HTTP server serving the RPMs:
-
-```bash
-# Serve local RPMs (run in a separate terminal)
-python3 -m http.server 8000 --directory work/linux/rpmbuild/RPMS/aarch64/
-
-# Add to the podman run command above:
-  --extra-repo http://host-ip:8000/
-```
+</details>
 
 **Output**
 ```
@@ -184,10 +200,19 @@ build/output/
 Extract the EFI System Partition and root filesystem from the qcow2 image.
 
 ```bash
+make flash-artifacts
+```
+
+<details>
+<summary>Under the hood: the raw extraction script</summary>
+
+```bash
 scripts/extract_flash_artifacts.sh \
   build/output/centos-10-qcow2-aarch64.qcow2 \
   build/output/flashimages
 ```
+
+</details>
 
 **Outputs**
 ```
@@ -205,14 +230,27 @@ build/output/flashimages/
 
 `generate_flat_build.sh` downloads Qualcomm boot binaries and CDT files,
 generates GPT partition tables via `qcom-ptool`, and assembles a complete
-per-board flash directory ready for QDL / PCAT.
+per-board flash directory ready for QDL / PCAT. Drive it through the Makefile:
+
+```bash
+# All supported boards (default)
+make flash
+
+# A specific board
+make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit
+```
+
+<details>
+<summary>Under the hood: the raw <code>generate_flat_build.sh</code> invocation</summary>
 
 ```bash
 ./scripts/generate_flat_build.sh \
-  --dtbs-tar    work/linux/build/out/dtbs.tar.gz \
+  --dtbs-tar    build/output/flashimages/dtbs.tar.gz \
   --esp-vfat    build/output/flashimages/efi.bin \
   --rootfs-ext4 build/output/flashimages/rootfs.img
 ```
+
+</details>
 
 #### Build a subset of boards
 
@@ -243,6 +281,18 @@ per-board flash directory ready for QDL / PCAT.
 | `--target-boards=<list\|all>` | `all` | Comma-separated board names or `all` |
 | `--verbose=(true\|false)` | `false` | Enable debug output |
 | `ARTIFACTDIR=<path>` | `$PWD/build/out` | Output directory (env var) |
+
+#### Makefile variables
+
+The Makefile targets (`make image`, `make flash-artifacts`, `make flash`) accept
+these overrides on the command line (see `make help` for the full list):
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOCAL_RPMS_DIR` | _unset_ | Directory of local kernel RPMs; mounted as a `file://` dnf repo for `make image` |
+| `LOCAL_KERNEL_REPO` | _unset_ | URL of a local HTTP server serving kernel RPMs |
+| `TARGET_BOARDS` | `qcs6490-rb3gen2-vision-kit` | Comma-separated boards (or `all`) for `make flash` |
+| `EXTRA_FLASH_OPTS` | _unset_ | Extra flags forwarded to `generate_flat_build.sh` |
 
 **Flash outputs**
 ```
