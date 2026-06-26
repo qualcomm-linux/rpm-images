@@ -14,9 +14,11 @@ runs:
         set -euo pipefail
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          podman \
-          createrepo-c \
-          qemu-utils \
+          pipx \
+          uidmap \
+          binfmt-support \
+          qemu-user-static \
+          systemd-repart \
           parted \
           e2fsprogs \
           xfsprogs \
@@ -34,3 +36,28 @@ runs:
           coreutils \
           git \
           python3
+
+    - name: Install mkosi
+      shell: bash
+      run: |
+        set -euo pipefail
+        pipx install -f git+https://github.com/systemd/mkosi.git
+        pipx ensurepath
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Enable aarch64 QEMU emulation
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo update-binfmts --enable qemu-aarch64 || true
+
+    - name: Configure sub-UIDs/GIDs for mkosi
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! grep -q "^${USER}:" /etc/subuid 2>/dev/null; then
+          echo "${USER}:200000:65536" | sudo tee -a /etc/subuid
+        fi
+        if ! grep -q "^${USER}:" /etc/subgid 2>/dev/null; then
+          echo "${USER}:200000:65536" | sudo tee -a /etc/subgid
+        fi

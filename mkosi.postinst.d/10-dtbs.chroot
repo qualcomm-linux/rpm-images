@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# mkosi post-installation script — runs inside the chroot.
+# Packs DTBs from the highest installed kernel into $OUTPUTDIR/dtbs.tar.gz.
+# $OUTPUTDIR is bind-mounted by mkosi to the host-side build output directory.
+
+set -euo pipefail
+
+# Mask services that must not run on first boot
+systemctl mask systemd-firstboot.service || true
+
+# Pick the highest installed kernel version (latest carries the most up-to-date
+# DTBs for new hardware, matching the same rationale used in debos).
+kver=$(find /usr/lib/modules -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)
+kver=$(basename "$kver")
+
+dtb_dir="/usr/lib/modules/${kver}/dtb"
+[[ -d "$dtb_dir" ]] || { echo "[!] DTB directory not found: $dtb_dir" >&2; exit 1; }
+
+# Pack all DTBs as bare paths (e.g. qcom/qcs6490-rb3gen2.dtb), stripping "./"
+tar -C "$dtb_dir" --transform='s|^\./||' -czf "$OUTPUTDIR/dtbs.tar.gz" .
+
+echo "[✓] DTBs packed from kernel $kver -> $OUTPUTDIR/dtbs.tar.gz"

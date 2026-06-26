@@ -2,13 +2,13 @@
 
 ## Overview
 
-Generates CentOS Stream 10 (aarch64) images for Qualcomm platforms.
+Generates CentOS Stream 10 (aarch64) disk images for Qualcomm RB3 Gen2 platforms using **[mkosi](https://mkosi.systemd.io/)**.
 
 ## Features
 
 - Custom Linux kernel compilation (QCOM kernels, linux-next, upstream)
-- CentOS Stream 10 OS image generation using **osbuild / image-builder**
-- Board-specific flash artifact generation (`generate_flat_build.sh`)
+- CentOS Stream 10 OS image generation using **mkosi**
+- Board-specific flash package generation (`generate_flat_build.sh`)
 
 ---
 
@@ -28,21 +28,46 @@ Generates CentOS Stream 10 (aarch64) images for Qualcomm platforms.
 
 ## Prerequisites
 
-### System Requirements
-- **Architecture**: ARM or x86_64 development host
-- **Runtime**: `podman` or `docker` installed and running
-- **Privileged Access**: `sudo` access required for container builds
-- **Network**: Access to CentOS Stream mirrors and package repositories
-- **Disk Space**: Minimum 200 GB free in build directory
+### Install mkosi
 
-### Host Tools
+A recent version of mkosi is required:
+
+```bash
+pipx install -f git+https://github.com/systemd/mkosi.git
+pipx ensurepath   # then restart your shell
+```
+
+### Host System Dependencies
+
 ```bash
 # Fedora / CentOS Stream
-sudo dnf install podman python3 git curl unzip mkdosfs mtools rpm-build dtc uboot-tools createrepo-c
+sudo dnf install python3 git curl unzip mkdosfs mtools rpm-build dtc uboot-tools \
+                 createrepo-c binfmt-support qemu-user-static systemd-repart \
+                 uidmap pipx
 
 # Ubuntu / Debian
-sudo apt install podman python3 git curl unzip dosfstools mtools rpm dtc u-boot-tools createrepo-c
+sudo apt install python3 git curl unzip dosfstools mtools rpm dtc u-boot-tools \
+                 createrepo-c binfmt-support qemu-user-static systemd-repart \
+                 uidmap pipx
 ```
+
+### Sub-UID/GID Setup (required for mkosi containerization)
+
+```bash
+echo "$USER:200000:65536" | sudo tee -a /etc/subuid
+echo "$USER:200000:65536" | sudo tee -a /etc/subgid
+```
+
+### Enable aarch64 QEMU emulation (x86_64 hosts)
+
+```bash
+sudo update-binfmts --enable qemu-aarch64
+```
+
+### Disk Space
+
+Minimum **50 GB** free in the build directory. The mkosi package cache
+(`mkosi.cache/`) is reused across builds.
 
 ---
 
@@ -56,13 +81,10 @@ sudo apt install podman python3 git curl unzip dosfstools mtools rpm dtc u-boot-
 │  Phase 1: Kernel Compilation (RPM)                              │
 │  └─→ build_binrpm_pkg.py                                        │
 │                                                                 │
-│  Phase 2: OS Image Generation (osbuild)                         │
-│  └─→ image-builder-cli (qcow2)                                  │
+│  Phase 2: OS Image Generation (mkosi)                           │
+│  └─→ mkosi build → build/output/image.raw                       │
 │                                                                 │
-│  Phase 3: Flash Artifact Extraction                             │
-│  └─→ extract_flash_artifacts.sh                                 │
-│                                                                 │
-│  Phase 4: Board-Specific Flash Packages                         │
+│  Phase 3: Board-Specific Flash Packages                         │
 │  └─→ generate_flat_build.sh                                     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -70,37 +92,30 @@ sudo apt install podman python3 git curl unzip dosfstools mtools rpm dtc u-boot-
 
 ---
 
-## Workspace & Output Directory Layout
+## Project Structure
 
 ```
 .
-├── downloads/                           # Cached boot-binary ZIPs (auto-populated)
-├── work/                                # Ephemeral build scratch space
-├── build/
-│   ├── out/                             # Default ARTIFACTDIR
-│   │   └── flash_<board>_<storage>/    # Board-specific flash packages
-│   │       ├── prog_firehose_*.elf
-│   │       ├── rawprogram*.xml
-│   │       ├── patch*.xml
-│   │       ├── gpt_*.bin
-│   │       ├── efi.bin                 # EFI System Partition (VFAT)
-│   │       ├── rootfs.img              # Root filesystem (EXT4)
-│   │       └── dtb.bin                 # DTB VFAT (FIT or legacy)
-│   └── output/
-│       ├── centos-10-qcow2-aarch64.qcow2
-│       ├── centos-10-qcow2-aarch64.qcow2.md5
-│       ├── flashimages/
-│       │   ├── efi.bin                 # Extracted EFI partition
-│       │   └── rootfs.img              # Extracted root filesystem
-│       └── fit/
-│           └── dtb.bin                 # FIT DTB image (4 MB VFAT)
-└── work/linux/
-    ├── arch/arm64/boot/Image
-    ├── arch/arm64/boot/dts/*.dtb
-    ├── build/out/dtbs.tar.gz
-    └── rpmbuild/
-        ├── RPMS/aarch64/kernel-*.rpm
-        └── SRPMS/kernel-*.src.rpm
+├── mkosi.conf                   # Base mkosi config (arch, format, bootloader)
+├── mkosi.conf.d/
+│   └── centos.conf              # CentOS Stream 10 packages and services
+├── mkosi.profiles/
+│   ├── rb3gen2.conf             # RB3 Gen2 board profile (4K sectors, probe timeout)
+├── mkosi.extra/
+│   ├── etc/repart.d/50-root.conf  # Auto-grow root partition on first boot
+│   └── usr/lib/firmware/          # Drop extra firmware files here
+├── mkosi.packages/              # Drop custom kernel RPMs here before building
+├── mkosi.postinst.chroot        # Creates 'qcom' user inside the image
+├── scripts/
+│   ├── build_binrpm_pkg.py      # Kernel RPM builder
+│   └── generate_flat_build.sh
+└── build/
+    ├── output/
+    │   ├── image.raw            # Full disk image (EFI + rootfs)
+    │   ├── image.esp.raw        # EFI System Partition (VFAT)
+    │   └── image.root-arm64.raw # Root filesystem (EXT4)
+    └── out/
+        └── flash_<board>_<storage>/  # Per-board flash packages
 ```
 
 ---
@@ -139,135 +154,81 @@ work/linux/
 
 ### Phase 2: OS Image Generation
 
-**Tool**: `image-builder-cli` (osbuild), driven by the `Makefile`.
+**Tool**: `mkosi`
 
 ```bash
 make image
 ```
 
-To include locally built kernel RPMs, point `LOCAL_RPMS_DIR` at a directory of
-`.rpm` files. The Makefile runs `createrepo_c`, mounts the directory into the
-build container, and adds it as a `file://` dnf repo automatically:
-
+This runs:
 ```bash
-cp work/linux/rpmbuild/RPMS/aarch64/*.rpm local-rpms/
-make image LOCAL_RPMS_DIR=local-rpms
+mkosi --profile rb3gen2 --force build
 ```
 
-Alternatively, serve the RPMs over HTTP and pass `LOCAL_KERNEL_REPO`:
-
-```bash
-# Serve local RPMs (run in a separate terminal)
-python3 -m http.server 8000 --directory work/linux/rpmbuild/RPMS/aarch64/
-make image LOCAL_KERNEL_REPO=http://host-ip:8000/
-```
-
-<details>
-<summary>Under the hood: the raw <code>image-builder-cli</code> invocation</summary>
-
-```bash
-sudo podman run --rm --privileged \
-  --net=host \
-  -v "$(pwd)/build/output:/output:rw" \
-  -v "$(pwd)/build/logs:/var/log:rw" \
-  -v "$(pwd)/configs/cs-stream-console-aarch64.toml:/blueprint.toml:ro" \
-  ghcr.io/osbuild/image-builder-cli:latest build \
-  --verbose \
-  --distro centos-10 \
-  --arch aarch64 \
-  --extra-repo https://mirror.stream.centos.org/10-stream/BaseOS/aarch64/os/ \
-  --extra-repo https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/ \
-  --extra-repo https://mirror.stream.centos.org/10-stream/CRB/aarch64/os/ \
-  --blueprint /blueprint.toml \
-  qcow2 \
-  --output-dir /output \
-  2>&1 | tee build/build-cs-stream-console.log
-```
-
-</details>
+mkosi reads configuration from:
+- `mkosi.conf` — base settings (distribution, architecture, bootloader, kernel cmdline)
+- `mkosi.conf.d/centos.conf` — CentOS Stream 10 packages and services
+- `mkosi.profiles/qcs6490-rb3gen2.conf` — RB3 Gen2 board settings
+- `mkosi.profiles/ufs.conf` — UFS 4K sector size
 
 **Output**
 ```
 build/output/
-├── centos-10-qcow2-aarch64.qcow2
-└── centos-10-qcow2-aarch64.qcow2.md5
+└── image.raw    # Full GPT disk image (EFI System Partition + root filesystem)
+```
+
+#### Including a locally built kernel
+
+Copy kernel RPMs into `mkosi.packages/` before building — no local HTTP server
+is required:
+
+```bash
+cp work/linux/rpmbuild/RPMS/aarch64/*.rpm mkosi.packages/
+make image
+```
+
+mkosi picks up all packages in `mkosi.packages/` automatically via
+`PackageDirectories=mkosi.packages` in `mkosi.conf`.
+
+#### Adding extra firmware
+
+Place any firmware files not available in `linux-firmware` under
+`mkosi.extra/usr/lib/firmware/` — they will be baked into the image:
+
+```
+mkosi.extra/usr/lib/firmware/
+└── qcom/
+    └── <board-specific firmware files>
 ```
 
 ---
 
-### Phase 3: Flash Artifact Extraction
-
-Extract the EFI System Partition and root filesystem from the qcow2 image.
-
-```bash
-make flash-artifacts
-```
-
-<details>
-<summary>Under the hood: the raw extraction script</summary>
-
-```bash
-scripts/extract_flash_artifacts.sh \
-  build/output/centos-10-qcow2-aarch64.qcow2 \
-  build/output/flashimages
-```
-
-</details>
-
-**Outputs**
-```
-build/output/flashimages/
-├── efi.bin       # EFI System Partition (VFAT, contains GRUB + kernel)
-└── rootfs.img    # Root filesystem (EXT4)
-```
-
-> **Critical**: `efi.bin` and `rootfs.img` must always be extracted from the
-> **same** qcow2 image.
-
----
-
-### Phase 4: Board-Specific Flash Package Generation
+### Phase 3: Board-Specific Flash Package Generation
 
 `generate_flat_build.sh` downloads Qualcomm boot binaries and CDT files,
 generates GPT partition tables via `qcom-ptool`, and assembles a complete
-per-board flash directory ready for QDL / PCAT. Drive it through the Makefile:
+per-board flash directory ready for QDL / PCAT.
 
 ```bash
-# All supported boards (default)
 make flash
-
-# A specific board
-make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit
 ```
 
-<details>
-<summary>Under the hood: the raw <code>generate_flat_build.sh</code> invocation</summary>
-
+Or manually:
 ```bash
 ./scripts/generate_flat_build.sh \
-  --dtbs-tar    build/output/flashimages/dtbs.tar.gz \
-  --esp-vfat    build/output/flashimages/efi.bin \
-  --rootfs-ext4 build/output/flashimages/rootfs.img
+  --dtbs-tar    build/output/dtbs.tar.gz \
+  --esp-vfat    build/output/image.esp.raw \
+  --rootfs-ext4 build/output/image.root-arm64.raw
 ```
-
-</details>
 
 #### Build a subset of boards
 
 ```bash
 # Single board
-./scripts/generate_flat_build.sh \
-  --target-boards qcs6490-rb3gen2-vision-kit \
-  --dtb-bin     build/output/fit/dtb.bin \
-  --esp-vfat    build/output/flashimages/efi.bin \
-  --rootfs-ext4 build/output/flashimages/rootfs.img
+make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit
 
 # Multiple boards (comma-separated)
-./scripts/generate_flat_build.sh \
-  --target-boards qcs6490-rb3gen2-vision-kit,qcs6490-rb3gen2-core-kit \
-  --dtb-bin     build/output/fit/dtb.bin \
-  --esp-vfat    build/output/flashimages/efi.bin \
-  --rootfs-ext4 build/output/flashimages/rootfs.img
+make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit,qcs6490-rb3gen2-core-kit
 ```
 
 #### Key options
@@ -275,29 +236,17 @@ make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit
 | Option | Default | Description |
 |---|---|---|
 | `--dtb-bin=<path>` | — | FIT DTB VFAT image from `fit_build.py` (preferred) |
-| `--dtbs-tar=<path>` | `linux/build/out/dtbs.tar.gz` | Legacy DTB tarball (fallback) |
+| `--dtbs-tar=<path>` | `build/output/dtbs.tar.gz` | Legacy DTB tarball (fallback) |
 | `--esp-vfat=<path>` | — | EFI System Partition image |
 | `--rootfs-ext4=<path>` | — | Root filesystem image |
 | `--target-boards=<list\|all>` | `all` | Comma-separated board names or `all` |
 | `--verbose=(true\|false)` | `false` | Enable debug output |
 | `ARTIFACTDIR=<path>` | `$PWD/build/out` | Output directory (env var) |
 
-#### Makefile variables
-
-The Makefile targets (`make image`, `make flash-artifacts`, `make flash`) accept
-these overrides on the command line (see `make help` for the full list):
-
-| Variable | Default | Description |
-|---|---|---|
-| `LOCAL_RPMS_DIR` | _unset_ | Directory of local kernel RPMs; mounted as a `file://` dnf repo for `make image` |
-| `LOCAL_KERNEL_REPO` | _unset_ | URL of a local HTTP server serving kernel RPMs |
-| `TARGET_BOARDS` | `qcs6490-rb3gen2-vision-kit` | Comma-separated boards (or `all`) for `make flash` |
-| `EXTRA_FLASH_OPTS` | _unset_ | Extra flags forwarded to `generate_flat_build.sh` |
-
 **Flash outputs**
 ```
 build/out/
-└── flash_<board>_<ufs|emmc>/
+└── flash_<board>_<ufs>/
     ├── prog_firehose_ddr_*.elf   # Firehose programmer
     ├── rawprogram*.xml           # Flash programming script
     ├── patch*.xml                # Patch script

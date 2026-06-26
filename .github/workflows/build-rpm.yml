@@ -5,7 +5,7 @@ on:
     outputs:
       artifacts_url:
         description: "URL to retrieve build artifacts"
-        value: ${{ jobs.build-and-flash.outputs.url }}
+        value: ${{ jobs.create-output.outputs.url }}
 
 permissions:
   contents: read
@@ -35,13 +35,25 @@ jobs:
           echo "Workspace owner: ${owner}"
           echo "WORKSPACE_OWNER=${owner}" >> "$GITHUB_ENV"
 
+      - name: Install kernel build dependencies
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            git make gcc bc bison flex perl python3 \
+            openssl openssl-devel elfutils-libelf-devel elfutils-devel \
+            rpm-build rpmdevtools \
+            rsync tar gzip findutils diffutils coreutils \
+            kmod dwarves \
+            hostname which
+
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Build kernel RPMs
-        uses: ./.github/actions/build-kernel-rpm
-        with:
-          kernel-ref: qcom-6.18.y
+        run: |
+          set -euo pipefail
+          python3 scripts/build_binrpm_pkg.py \
+            --qcom-6.18.y
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v7
@@ -51,7 +63,7 @@ jobs:
           path: |
             linux/rpmbuild/RPMS/aarch64/kernel-*.rpm
             linux/rpmbuild/SRPMS/kernel-*.src.rpm
-          retention-days: 1
+          retention-days: 7
 
       - name: Hand workspace back to runner user
         if: always()
@@ -97,12 +109,10 @@ jobs:
           echo "[${kernel_url}](${kernel_url})" >> $GITHUB_STEP_SUMMARY
 
 
-  build-and-flash:
-    name: Phase 2 - Image, extract & flash packages
+  os-image:
+    name: Phase 2 - OS disk image (mkosi)
     needs: [kernel-rpm]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
-    outputs:
-      url: ${{ steps.url.outputs.url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -116,30 +126,81 @@ jobs:
           name: kernel-artifacts
           path: kernel-artifacts
 
-      - name: Stage kernel RPMs
+      - name: Stage kernel RPMs into mkosi.packages
         run: |
           set -euo pipefail
-          mkdir -p local-rpms
-          cp kernel-artifacts/RPMS/aarch64/*.rpm local-rpms/
+          mkdir -p mkosi.packages
+          cp kernel-artifacts/RPMS/aarch64/*.rpm mkosi.packages/
 
-      - name: Build image, extract, and assemble flash packages
+      - name: Build disk image with mkosi
         run: |
           set -euo pipefail
-          # `make flash` chains image -> flash-artifacts -> flash on a single
-          # disk, so no intermediate binaries need to be passed between jobs.
-          sudo HOME=/tmp make flash \
-            LOCAL_RPMS_DIR=local-rpms \
-            TARGET_BOARDS=qcs6490-rb3gen2-vision-kit \
-            EXTRA_FLASH_OPTS=--verbose=true
+          umask 0022
+          mkdir -p build/output build/logs
+          mkosi \
+            --profile rb3gen2 \
+            -O build/output \
+            --force \
+            --sandbox=none \
+            build \
+            2>&1 | tee build/logs/build-cs-stream-console.log
+          test -f build/output/image.raw            || { echo "[!] mkosi did not produce build/output/image.raw";              exit 1; }
+          test -f build/output/image.efi            || { echo "[!] mkosi did not produce build/output/image.efi";              exit 1; }
+          test -f build/output/image.root-arm64.raw || { echo "[!] mkosi did not produce build/output/image.root-arm64.raw";   exit 1; }
+          test -f build/output/dtbs.tar.gz          || { echo "[!] mkosi did not produce build/output/dtbs.tar.gz";            exit 1; }
 
-          # make ran as root; hand the outputs back so later steps can read them.
-          sudo chown -R "$(id -u):$(id -g)" build
+      - name: Upload mkosi artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: mkosi-artifacts
+          if-no-files-found: error
+          path: |
+            build/output/image.raw
+            build/output/image.efi
+            build/output/image.esp.raw
+            build/output/image.root-arm64.raw
+            build/output/dtbs.tar.gz
+          retention-days: 7
 
-      - name: Stage SBOMs and flash packages for publishing
+
+  flash-package:
+    name: Phase 3 - Per-board flash packages
+    needs: [os-image]
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install host dependencies
+        uses: ./.github/actions/install-host-deps
+
+      - name: Download mkosi artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: mkosi-artifacts
+          path: build/output
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: kernel-artifacts
+          path: kernel-artifacts
+
+      - name: Generate per-board flash packages
+        run: |
+          set -euo pipefail
+          ./scripts/generate_flat_build.sh \
+            --dtbs-tar=build/output/dtbs.tar.gz \
+            --esp-vfat=build/output/image.esp.raw \
+            --rootfs-ext4=build/output/image.root-arm64.raw \
+            --target-boards=qcs6490-rb3gen2-vision-kit
+
+      - name: Stage artifacts for publishing
         run: |
           set -euo pipefail
           mkdir -p rpm-artifacts
-          find build/output -name '*.spdx.json' -exec cp -a {} rpm-artifacts/ \;
+          gzip -c build/output/image.raw \
+            > rpm-artifacts/centos-10-image-aarch64.raw.gz
           for d in build/out/flash_*; do
             [ -d "$d" ] || continue
             board="$(basename "$d")"
@@ -156,14 +217,43 @@ jobs:
           destination: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ env.BUILD_ID }}/
           fileserver_url: ${{ env.FILESERVER_URL }}
 
+      - name: Upload flash packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: flash-packages
+          if-no-files-found: error
+          path: rpm-artifacts/flash_*.tar.gz
+          retention-days: 7
+
       - name: Print download URL
-        id: url
         env:
           build_url: ${{ steps.upload_artifacts_s3.outputs.url }}
         run: |
-          fallback='${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-          url="${build_url:-$fallback}"
-          echo "url=${url}" >> "$GITHUB_OUTPUT"
-          echo "Downloads URL: ${url}"
+          echo "Downloads URL: ${build_url}"
+          echo "${build_url}" > build_url
           echo "## Download URL" >> $GITHUB_STEP_SUMMARY
-          echo "[${url}](${url})" >> $GITHUB_STEP_SUMMARY
+          echo "[${build_url}](${build_url})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload build URL
+        uses: actions/upload-artifact@v7
+        with:
+          name: build_url
+          path: build_url
+          retention-days: 7
+
+
+  create-output:
+    name: Publish artifacts URL
+    needs: flash-package
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    steps:
+      - name: Download build URL
+        uses: actions/download-artifact@v8
+        with:
+          name: build_url
+      - id: url
+        run: |
+          url="$(cat build_url 2>/dev/null || echo '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}')"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"

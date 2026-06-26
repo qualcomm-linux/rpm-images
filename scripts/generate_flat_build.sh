@@ -93,12 +93,12 @@ normalize_bool() {
 
 log_debug() {
         local msg="${1:-}"
-        [[ "$VERBOSE" == "true" ]] && echo "$msg" >&2
+        [[ "$VERBOSE" == "true" ]] && echo "$msg" >&2 || true
 }
 
 # Print verbose debug lines to stderr (so command substitutions are not polluted)
 dbg() {
-        [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2
+        [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2 || true
 }
 
 # Normalize boolean flags
@@ -687,14 +687,13 @@ create_legacy_dtb_vfat_from_tar() {
         rm -rf "$extract_dir"
         mkdir -p "$extract_dir"
 
+        # dtbs.tar.gz stores entries as either "qcom/<name>.dtb" (bare) or
+        # "./qcom/<name>.dtb" depending on how the tar was built.  Try bare
+        # path first, then the ./ prefixed form.
         local dtb_src=""
         if tar -C "$extract_dir" -xzf "$DTBS_TAR" "$dtb_path_in_tar" 2>/dev/null \
            || tar -C "$extract_dir" -xzf "$DTBS_TAR" "./$dtb_path_in_tar" 2>/dev/null; then
-                if [[ -f "$extract_dir/$dtb_path_in_tar" ]]; then
-                        dtb_src="$extract_dir/$dtb_path_in_tar"
-                elif [[ -f "$extract_dir/$(basename "$dtb_path_in_tar")" ]]; then
-                        dtb_src="$extract_dir/$(basename "$dtb_path_in_tar")"
-                fi
+                [[ -f "$extract_dir/$dtb_path_in_tar" ]] && dtb_src="$extract_dir/$dtb_path_in_tar"
         fi
 
         if [[ -z "$dtb_src" || ! -f "$dtb_src" ]]; then
@@ -783,13 +782,12 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         rm -rf "$extract_dir"
         mkdir -p "$extract_dir"
 
+        # dtbs.tar.gz stores entries as either "qcom/<name>.dtb" (bare) or
+        # "./qcom/<name>.dtb" depending on how the tar was built.  Try bare
+        # path first, then the ./ prefixed form.
         if tar -C "$extract_dir" -xzf "$DTBS_TAR" "$resolved_dtb" 2>/dev/null \
            || tar -C "$extract_dir" -xzf "$DTBS_TAR" "./$resolved_dtb" 2>/dev/null; then
-            if [[ -f "$extract_dir/$resolved_dtb" ]]; then
-                artifact_src="$extract_dir/$resolved_dtb"
-            elif [[ -f "$extract_dir/$(basename "$resolved_dtb")" ]]; then
-                artifact_src="$extract_dir/$(basename "$resolved_dtb")"
-            fi
+            [[ -f "$extract_dir/$resolved_dtb" ]] && artifact_src="$extract_dir/$resolved_dtb"
         fi
 
         [[ -f "$artifact_src" ]] || {

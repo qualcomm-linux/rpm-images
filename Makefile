@@ -1,39 +1,15 @@
-#   make image           1: Build CentOS Stream qcow2 image
-#   make flash-artifacts 2: Extract EFI + rootfs from qcow2
-#   make flash           3: Assemble per-board flash packages (default)
+#   make image           1: Build CentOS Stream 10 disk image with mkosi
+#                           (also produces image.efi and image.rootfs.raw directly)
+#   make flash           2: Assemble per-board flash packages (default)
 
-BLUEPRINT ?= configs/cs-stream-console-aarch64.toml
-DISTRO    ?= centos-10
-ARCH      ?= aarch64
+ARCH     ?= aarch64
+PROFILES ?= --profile rb3gen2
 
 BUILD_OUTPUT ?= build/output
 BUILD_LOGS   ?= build/logs
 
-IMAGE_BUILDER_IMAGE ?= ghcr.io/osbuild/image-builder-cli:latest
-
-# CentOS Stream mirrors for image-builder-cli
-CENTOS_MIRROR ?= https://mirror.stream.centos.org/10-stream
-EXTRA_REPOS   ?= \
-  --extra-repo $(CENTOS_MIRROR)/BaseOS/$(ARCH)/os/ \
-  --extra-repo $(CENTOS_MIRROR)/AppStream/$(ARCH)/os/ \
-  --extra-repo $(CENTOS_MIRROR)/CRB/$(ARCH)/os/
-
-# Optional: URL of a local HTTP server serving kernel RPMs.
-# Example (run in a separate terminal before 'make image'):
-#   python3 -m http.server 8000 --directory /path/to/rpms/
-# Then:
-#   make image LOCAL_KERNEL_REPO=http://<host-ip>:8000/
-LOCAL_KERNEL_REPO ?=
-
-# Optional: directory of locally-built kernel RPMs to feed into the image.
-# When set, createrepo metadata is generated and the directory is mounted into
-# the build container as a file:// dnf repo.
-# Example:
-#   make image LOCAL_RPMS_DIR=local-rpms
-LOCAL_RPMS_DIR ?=
-
-EXTRA_IMAGE_BUILDER_OPTS ?=
-SBOM              ?= 1
+# Optional: extra mkosi flags (e.g. --force to overwrite without prompting)
+EXTRA_MKOSI_OPTS ?=
 
 ARTIFACTDIR      ?= build/out
 TARGET_BOARDS    ?= qcs6490-rb3gen2-vision-kit
@@ -41,61 +17,59 @@ EXTRA_FLASH_OPTS ?=
 
 export ARTIFACTDIR
 
-QCOW2       := $(BUILD_OUTPUT)/centos-10-qcow2-$(ARCH).qcow2
-FLASHIMAGES := $(BUILD_OUTPUT)/flashimages
-EFI_BIN     := $(FLASHIMAGES)/efi.bin
-ROOTFS_IMG  := $(FLASHIMAGES)/rootfs.img
-DTBS_TAR    := $(FLASHIMAGES)/dtbs.tar.gz
+IMAGE_RAW    := $(BUILD_OUTPUT)/image.raw
+IMAGE_EFI    := $(BUILD_OUTPUT)/image.efi
+# systemd-repart inserts SplitName before the ".raw" extension:
+#   SplitName=esp    -> image.esp.raw   (FAT32 filesystem, flashed to efi partition)
+#   SplitName=rootfs -> image.rootfs.raw (ext4 filesystem, flashed to rootfs partition)
+# image.efi is the UKI PE binary (used for direct kernel boot / qemu), NOT for flashing.
+IMAGE_ESP    := $(BUILD_OUTPUT)/image.esp.raw
+IMAGE_ROOTFS := $(BUILD_OUTPUT)/image.root-arm64.raw
+FLASHIMAGES  := $(BUILD_OUTPUT)/flashimages
+# dtbs.tar.gz is produced by mkosi.postinst.d/10-dtbs.chroot into BUILD_OUTPUT
+# (mkosi maps $OUTPUTDIR inside the chroot to the host-side output directory).
+DTBS_TAR     := $(BUILD_OUTPUT)/dtbs.tar.gz
 
-.PHONY: all image flash-artifacts flash clean clean-downloads help
+.PHONY: all image flash-artifacts flash clean clean-cache clean-downloads help
 
 all: flash
 
-# Builds a CentOS Stream 10 aarch64 qcow2 image via image-builder-cli.
-# Output: $(QCOW2)
-$(QCOW2): $(BLUEPRINT)
-	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS)
-	$(if $(LOCAL_RPMS_DIR),test -d $(LOCAL_RPMS_DIR)/repodata || createrepo_c $(LOCAL_RPMS_DIR)/)
-	podman run --rm --privileged \
-	  --net=host \
-	  -v "$(CURDIR)/$(BUILD_OUTPUT):/output:rw" \
-	  -v "$(CURDIR)/$(BUILD_LOGS):/var/log:rw" \
-	  -v "$(CURDIR)/$(BLUEPRINT):/blueprint.toml:ro" \
-	  $(if $(LOCAL_RPMS_DIR),-v "$(CURDIR)/$(LOCAL_RPMS_DIR):/local-rpms:ro") \
-	  $(IMAGE_BUILDER_IMAGE) build \
-	  --verbose \
-	  --distro $(DISTRO) \
-	  --arch $(ARCH) \
-	  $(EXTRA_REPOS) \
-	  $(if $(LOCAL_KERNEL_REPO),--extra-repo $(LOCAL_KERNEL_REPO)) \
-	  $(if $(LOCAL_RPMS_DIR),--extra-repo file:///local-rpms/) \
-	  --blueprint /blueprint.toml \
-	  qcow2 \
-	  --output-dir /output \
-	  $(if $(SBOM),--with-sbom) \
-	  $(EXTRA_IMAGE_BUILDER_OPTS) \
+# mkosi produces image.raw (full disk), image.efi (UKI), and image.rootfs.raw
+# (raw ext4 partition) in one pass when SplitArtifacts=yes and mkosi.repart/
+# defines SplitName=rootfs on the root partition.  systemd-repart inserts the
+# SplitName before ".raw", giving image.rootfs.raw.  No sudo needed.
+$(IMAGE_RAW) $(IMAGE_EFI) $(IMAGE_ESP) $(IMAGE_ROOTFS) $(DTBS_TAR): mkosi.conf mkosi.conf.d/centos.conf mkosi.postinst.d/10-dtbs.chroot
+	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS) mkosi.packages
+	umask 0022 && mkosi \
+	  $(PROFILES) \
+	  -O $(BUILD_OUTPUT) \
+	  --force \
+	  $(EXTRA_MKOSI_OPTS) \
+	  build \
 	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-console.log
+	@test -f $(IMAGE_RAW)    || { echo "[!] mkosi did not produce $(IMAGE_RAW)";    exit 1; }
+	@test -f $(IMAGE_EFI)    || { echo "[!] mkosi did not produce $(IMAGE_EFI)";    exit 1; }
+	@test -f $(IMAGE_ROOTFS) || { echo "[!] mkosi did not produce $(IMAGE_ROOTFS)";   exit 1; }
+	@test -f $(DTBS_TAR)    || { echo "[!] mkosi.postinst.d/10-dtbs.chroot did not produce $(DTBS_TAR)"; exit 1; }
 
-image: $(QCOW2)
+image: $(IMAGE_RAW) $(IMAGE_EFI) $(IMAGE_ESP) $(IMAGE_ROOTFS) $(DTBS_TAR)
 
-$(FLASHIMAGES)/.extracted: $(QCOW2)
-	sudo scripts/extract_flash_artifacts.sh $< $(FLASHIMAGES)
-	@touch $@
+flash-artifacts: $(IMAGE_EFI) $(IMAGE_ESP) $(IMAGE_ROOTFS) $(DTBS_TAR)
 
-$(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR): $(FLASHIMAGES)/.extracted
-
-flash-artifacts: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
-
-flash: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
+flash: $(IMAGE_ESP) $(IMAGE_ROOTFS) $(DTBS_TAR)
 	./scripts/generate_flat_build.sh \
 	  --dtbs-tar=$(DTBS_TAR) \
-	  --esp-vfat=$(EFI_BIN) \
-	  --rootfs-ext4=$(ROOTFS_IMG) \
+	  --esp-vfat=$(IMAGE_ESP) \
+	  --rootfs-ext4=$(IMAGE_ROOTFS) \
 	  --target-boards=$(TARGET_BOARDS) \
 	  $(EXTRA_FLASH_OPTS)
 
 clean:
 	rm -rf $(BUILD_OUTPUT) $(ARTIFACTDIR) $(BUILD_LOGS)
+
+# Remove the mkosi package cache (forces re-download of all packages)
+clean-cache:
+	rm -rf mkosi.cache/
 
 # Remove cached boot-binary and CDT downloads
 clean-downloads:
@@ -105,26 +79,24 @@ help:
 	@echo "Usage: make [TARGET] [VARIABLE=value ...]"
 	@echo ""
 	@echo "Build targets:"
-	@echo "  image           Step 1: Build CentOS Stream qcow2 (image-builder-cli)"
-	@echo "  flash-artifacts Step 2: Extract EFI + rootfs from qcow2"
-	@echo "  flash           Step 3: Assemble per-board flash packages"
+	@echo "  image           Step 1: Build disk image (mkosi) — also emits image.efi + image.rootfs.raw"
+	@echo "  flash           Step 2: Assemble per-board flash packages"
+	@echo "  flash-artifacts Alias: image.efi + image.rootfs.raw + dtbs.tar.gz"
 	@echo "  all             All steps (default)"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  clean           Remove build outputs (BUILD_OUTPUT, ARTIFACTDIR, BUILD_LOGS)"
+	@echo "  clean-cache     Remove mkosi package cache (mkosi.cache/)"
 	@echo "  clean-downloads Remove cached boot-binary and CDT downloads"
 	@echo "  help            Show this help"
 	@echo ""
 	@echo "Variables (override on command line):"
-	@echo "  DTBS_TAR             DTB tarball (auto: $(FLASHIMAGES)/dtbs.tar.gz from rootfs)"
-	@echo "  BLUEPRINT            Image blueprint TOML (default: $(BLUEPRINT))"
-	@echo "  DISTRO               OS distro for image-builder (default: $(DISTRO))"
-	@echo "  ARCH                 Target architecture (default: $(ARCH))"
-	@echo "  LOCAL_KERNEL_REPO    URL of local kernel RPM HTTP server (default: unset)"
-	@echo "  LOCAL_RPMS_DIR       Dir of local kernel RPMs mounted as a file:// repo (default: unset)"
-	@echo "  TARGET_BOARDS        Boards to flash (default: $(TARGET_BOARDS))"
-	@echo "                       Use 'all' to build all supported boards"
-	@echo "  ARTIFACTDIR          Flash package output directory (default: $(ARTIFACTDIR))"
-	@echo "  EXTRA_FLASH_OPTS     Extra flags for generate_flat_build.sh"
-	@echo "  EXTRA_IMAGE_BUILDER_OPTS  Extra flags for image-builder-cli"
-	@echo "  SBOM                 Generate SBOM; pass --with-sbom to image-builder-cli (default: 1)"
+	@echo "  PROFILES         mkosi profile flags (default: $(PROFILES))"
+	@echo "  TARGET_BOARDS    Boards to flash (default: $(TARGET_BOARDS))"
+	@echo "                   Use 'all' to build all supported boards"
+	@echo "  ARTIFACTDIR      Flash package output directory (default: $(ARTIFACTDIR))"
+	@echo "  EXTRA_FLASH_OPTS Extra flags for generate_flat_build.sh"
+	@echo "  EXTRA_MKOSI_OPTS Extra flags for mkosi"
+	@echo ""
+	@echo "To include a custom kernel, copy RPMs into mkosi.packages/ before 'make image':"
+	@echo "  cp work/linux/rpmbuild/RPMS/aarch64/*.rpm mkosi.packages/"
