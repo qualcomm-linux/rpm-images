@@ -93,12 +93,12 @@ normalize_bool() {
 
 log_debug() {
         local msg="${1:-}"
-        [[ "$VERBOSE" == "true" ]] && echo "$msg" >&2
+        [[ "$VERBOSE" == "true" ]] && echo "$msg" >&2 || true
 }
 
 # Print verbose debug lines to stderr (so command substitutions are not polluted)
 dbg() {
-        [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2
+        [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2 || true
 }
 
 # Normalize boolean flags
