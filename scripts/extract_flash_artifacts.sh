@@ -1,34 +1,39 @@
 #!/usr/bin/env bash
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+#
+# Extract EFI System Partition and root filesystem from a raw disk image
+# produced by kiwi-ng (image.raw).
+#
+# Usage: extract_flash_artifacts.sh <input.raw> [output_dir]
+
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "Usage: $0 <input.qcow2> [output_dir]"
+  echo "Usage: $0 <input.raw> [output_dir]"
   exit 1
 fi
 
-QCOW2="$1"
+INPUT="$1"
 OUTDIR="${2:-output}"
 
-for cmd in qemu-img parted dd truncate awk sort stat hexdump; do
+for cmd in parted dd truncate awk sort stat hexdump; do
   command -v "$cmd" >/dev/null || { echo "Missing required command: $cmd"; exit 1; }
 done
 
 mkdir -p "$OUTDIR"
 
-RAW="$(mktemp --suffix=.raw)"
+RAW="$INPUT"
 LOOP_DEV=""
+
 cleanup() {
   if [[ -n "$LOOP_DEV" ]]; then
     losetup -d "$LOOP_DEV" >/dev/null 2>&1 || true
   fi
-  rm -f "$RAW"
 }
 trap cleanup EXIT
 
-echo "[*] Converting qcow2 → raw"
-qemu-img convert -f qcow2 -O raw "$QCOW2" "$RAW"
+echo "[*] Using raw disk image: $INPUT"
 
 echo "[*] Reading partition table"
 PARTED_TARGET="$RAW"
@@ -40,8 +45,8 @@ set -e
 if [[ $PARTED_RC -ne 0 ]]; then
   echo "$PARTED_OUT"
 
-  # Some images are partitioned for 4096-byte logical sectors (GPT header at
-  # byte offset 4096), which parted cannot parse directly from a regular file.
+  # Images with UFS 4096-byte logical sectors have the GPT header at
+  # byte offset 4096, which parted cannot parse directly from a regular file.
   # Retry through a read-only loop device with 4K logical sectors.
   if [[ "$PARTED_OUT" == *"unrecognised disk label"* ]]; then
     command -v losetup >/dev/null || {
@@ -50,7 +55,7 @@ if [[ $PARTED_RC -ne 0 ]]; then
     }
     [[ $EUID -eq 0 ]] || {
       echo "[!] Failed to parse partition table from raw file"
-      echo "    This image likely uses 4096-byte logical sectors."
+      echo "    This image uses 4096-byte logical sectors (UFS)."
       echo "    Re-run as root (or with sudo) to enable 4K loop-device probing."
       exit 1
     }
@@ -67,8 +72,7 @@ fi
 
 echo "$PARTED_OUT"
 
-# --- choose a safe, fast block size ---
-# 1MiB is typically the alignment used by image-builder/osbuild GPT layouts.
+# 1 MiB is the standard GPT partition alignment.
 BS=$((1024*1024))
 
 # Extract partition by part number using byte-accurate start (requires start % BS == 0)
@@ -83,7 +87,7 @@ extract_part_aligned() {
   [[ -z "$start" || -z "$size" ]] && return 1
 
   if (( start % BS != 0 )); then
-    # Fallback: sector-based exact extraction (still reasonably fast)
+    # Fallback: sector-based exact extraction
     local SECTOR=512
     local skip_sectors=$(( start / SECTOR ))
     local count_sectors=$(( size / SECTOR ))
@@ -145,7 +149,6 @@ XFS_MAGIC=$(dd if="$OUTDIR/rootfs.img" bs=1 count=4 2>/dev/null)
 ROOT_FS="unknown"
 if [[ "$EXT4_MAGIC" == "53ef" ]]; then
   ROOT_FS="ext4"
-  # Now dumpe2fs should succeed
   command -v dumpe2fs >/dev/null || { echo "Missing dumpe2fs (e2fsprogs)"; exit 1; }
   dumpe2fs -h "$OUTDIR/rootfs.img" >/dev/null 2>&1 || {
     echo "[!] ext4 superblock present but dumpe2fs failed unexpectedly"
@@ -169,9 +172,7 @@ echo
 echo "[✓] SUCCESS"
 echo "    EFI    : $OUTDIR/efi.bin    (signature ok)"
 echo "    rootfs : $OUTDIR/rootfs.img ($ROOT_FS)"
-echo "    dtbs   : $OUTDIR/dtbs.tar.gz (from rootfs /boot/dtb-*/)"
 echo
-echo "[✓] Images are FLASHABLE AS-IS"
 
 # -----------------------------
 # Extract DTBs from rootfs
@@ -187,24 +188,41 @@ extract_dtbs_from_ext4() {
 
   command -v debugfs >/dev/null 2>&1 || return 0
 
-  # List dtb-* directories under /boot
-  local boot_entries
-  boot_entries="$(debugfs -R "ls -p /boot" "$img" 2>/dev/null \
-    | awk -F'/' '{print $6}' | grep -E '^dtb-' | tr -d '\r' || true)"
-
   local tmp_dtb
   tmp_dtb="$(mktemp -d)"
 
-  for dtb_dir in $boot_entries; do
-    # rdump recursively dumps the entire dtb-<ver>/ tree to tmp_dtb/
-    debugfs -R "rdump /boot/${dtb_dir} ${tmp_dtb}" "$img" 2>/dev/null || true
-    # Move contents up one level (strip dtb-<ver>/ prefix) into staging
-    if [[ -d "${tmp_dtb}/${dtb_dir}" ]]; then
-      cp -a "${tmp_dtb}/${dtb_dir}/." "${staging}/"
+  # Primary location: /lib/modules/<kver>/dtb/  (RPM kernel layout)
+  local kver_entries
+  kver_entries="$(debugfs -R "ls -p /lib/modules" "$img" 2>/dev/null \
+    | awk -F'/' '{print $6}' | grep -v '^\.' | tr -d '\r' || true)"
+
+  for kver in $kver_entries; do
+    local dtb_path="/lib/modules/${kver}/dtb"
+    # Check the path exists before rdump
+    debugfs -R "ls -p ${dtb_path}" "$img" >/dev/null 2>&1 || continue
+    debugfs -R "rdump ${dtb_path} ${tmp_dtb}" "$img" 2>/dev/null || true
+    if [[ -d "${tmp_dtb}/dtb" ]]; then
+      cp -a "${tmp_dtb}/dtb/." "${staging}/"
+      rm -rf "${tmp_dtb:?}/dtb"
       found=1
     fi
-    rm -rf "${tmp_dtb:?}/${dtb_dir}"
   done
+
+  # Fallback: /boot/dtb-*/  (older layout)
+  if [[ "$found" -eq 0 ]]; then
+    local boot_entries
+    boot_entries="$(debugfs -R "ls -p /boot" "$img" 2>/dev/null \
+      | awk -F'/' '{print $6}' | grep -E '^dtb-' | tr -d '\r' || true)"
+
+    for dtb_dir in $boot_entries; do
+      debugfs -R "rdump /boot/${dtb_dir} ${tmp_dtb}" "$img" 2>/dev/null || true
+      if [[ -d "${tmp_dtb}/${dtb_dir}" ]]; then
+        cp -a "${tmp_dtb}/${dtb_dir}/." "${staging}/"
+        rm -rf "${tmp_dtb:?}/${dtb_dir}"
+        found=1
+      fi
+    done
+  fi
 
   rm -rf "$tmp_dtb"
   echo "$found"
@@ -213,7 +231,7 @@ extract_dtbs_from_ext4() {
 if [[ "$ROOT_FS" == "ext4" ]]; then
   found="$(extract_dtbs_from_ext4 "$OUTDIR/rootfs.img" "$DTB_STAGING")"
   if [[ "$found" -eq 0 ]]; then
-    echo "[!] No DTBs found under /boot/dtb-*/ in rootfs — skipping dtbs.tar.gz"
+    echo "[!] No DTBs found under /lib/modules/<kver>/dtb/ or /boot/dtb-*/ in rootfs — skipping dtbs.tar.gz"
   else
     tar -czf "$OUTDIR/dtbs.tar.gz" -C "$DTB_STAGING" .
     echo "[✓] DTBs packed: $OUTDIR/dtbs.tar.gz"
@@ -223,3 +241,5 @@ else
 fi
 
 rm -rf "$DTB_STAGING"
+
+echo "[✓] Images are FLASHABLE AS-IS"

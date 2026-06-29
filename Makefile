@@ -1,39 +1,19 @@
-#   make image           1: Build CentOS Stream qcow2 image
-#   make flash-artifacts 2: Extract EFI + rootfs from qcow2
+#   make image           1: Build CentOS Stream 10 disk image with kiwi
+#   make flash-artifacts 2: Extract EFI + rootfs from raw disk image
 #   make flash           3: Assemble per-board flash packages (default)
 
-BLUEPRINT ?= configs/cs-stream-console-aarch64.toml
-DISTRO    ?= centos-10
-ARCH      ?= aarch64
+SHELL := /bin/bash
+
+ARCH     ?= aarch64
 
 BUILD_OUTPUT ?= build/output
 BUILD_LOGS   ?= build/logs
 
-IMAGE_BUILDER_IMAGE ?= ghcr.io/osbuild/image-builder-cli:latest
+# Optional: extra kiwi-ng flags
+EXTRA_KIWI_OPTS ?=
 
-# CentOS Stream mirrors for image-builder-cli
-CENTOS_MIRROR ?= https://mirror.stream.centos.org/10-stream
-EXTRA_REPOS   ?= \
-  --extra-repo $(CENTOS_MIRROR)/BaseOS/$(ARCH)/os/ \
-  --extra-repo $(CENTOS_MIRROR)/AppStream/$(ARCH)/os/ \
-  --extra-repo $(CENTOS_MIRROR)/CRB/$(ARCH)/os/
-
-# Optional: URL of a local HTTP server serving kernel RPMs.
-# Example (run in a separate terminal before 'make image'):
-#   python3 -m http.server 8000 --directory /path/to/rpms/
-# Then:
-#   make image LOCAL_KERNEL_REPO=http://<host-ip>:8000/
-LOCAL_KERNEL_REPO ?=
-
-# Optional: directory of locally-built kernel RPMs to feed into the image.
-# When set, createrepo metadata is generated and the directory is mounted into
-# the build container as a file:// dnf repo.
-# Example:
-#   make image LOCAL_RPMS_DIR=local-rpms
-LOCAL_RPMS_DIR ?=
-
-EXTRA_IMAGE_BUILDER_OPTS ?=
-SBOM              ?= 1
+# Directory for custom kernel RPMs (populated before 'make image')
+KIWI_PACKAGES_DIR ?= packages
 
 ARTIFACTDIR      ?= build/out
 TARGET_BOARDS    ?= qcs6490-rb3gen2-vision-kit
@@ -41,44 +21,41 @@ EXTRA_FLASH_OPTS ?=
 
 export ARTIFACTDIR
 
-QCOW2       := $(BUILD_OUTPUT)/centos-10-qcow2-$(ARCH).qcow2
-FLASHIMAGES := $(BUILD_OUTPUT)/flashimages
-EFI_BIN     := $(FLASHIMAGES)/efi.bin
-ROOTFS_IMG  := $(FLASHIMAGES)/rootfs.img
-DTBS_TAR    := $(FLASHIMAGES)/dtbs.tar.gz
+IMAGE_RAW    := $(BUILD_OUTPUT)/image.raw
+FLASHIMAGES  := $(BUILD_OUTPUT)/flashimages
+EFI_BIN      := $(FLASHIMAGES)/efi.bin
+ROOTFS_IMG   := $(FLASHIMAGES)/rootfs.img
+DTBS_TAR     := $(FLASHIMAGES)/dtbs.tar.gz
 
-.PHONY: all image flash-artifacts flash clean clean-downloads help
+.PHONY: all image dtbs flash-artifacts flash clean clean-cache clean-downloads help
 
 all: flash
 
-# Builds a CentOS Stream 10 aarch64 qcow2 image via image-builder-cli.
-# Output: $(QCOW2)
-$(QCOW2): $(BLUEPRINT)
-	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS)
-	$(if $(LOCAL_RPMS_DIR),test -d $(LOCAL_RPMS_DIR)/repodata || createrepo_c $(LOCAL_RPMS_DIR)/)
-	podman run --rm --privileged \
-	  --net=host \
-	  -v "$(CURDIR)/$(BUILD_OUTPUT):/output:rw" \
-	  -v "$(CURDIR)/$(BUILD_LOGS):/var/log:rw" \
-	  -v "$(CURDIR)/$(BLUEPRINT):/blueprint.toml:ro" \
-	  $(if $(LOCAL_RPMS_DIR),-v "$(CURDIR)/$(LOCAL_RPMS_DIR):/local-rpms:ro") \
-	  $(IMAGE_BUILDER_IMAGE) build \
-	  --verbose \
-	  --distro $(DISTRO) \
-	  --arch $(ARCH) \
-	  $(EXTRA_REPOS) \
-	  $(if $(LOCAL_KERNEL_REPO),--extra-repo $(LOCAL_KERNEL_REPO)) \
-	  $(if $(LOCAL_RPMS_DIR),--extra-repo file:///local-rpms/) \
-	  --blueprint /blueprint.toml \
-	  qcow2 \
-	  --output-dir /output \
-	  $(if $(SBOM),--with-sbom) \
-	  $(EXTRA_IMAGE_BUILDER_OPTS) \
+$(IMAGE_RAW): kiwi/config.xml
+	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS) $(KIWI_PACKAGES_DIR)
+	@set -euo pipefail; \
+	kiwi_extra_repo=""; \
+	if ls $(KIWI_PACKAGES_DIR)/*.rpm 2>/dev/null | head -1 > /dev/null; then \
+	  echo "[*] Creating local package repository from $(KIWI_PACKAGES_DIR)/..."; \
+	  createrepo_c $(KIWI_PACKAGES_DIR)/; \
+	  kiwi_extra_repo="--add-repo file://$(CURDIR)/$(KIWI_PACKAGES_DIR),rpm-md,local-packages,1"; \
+	fi; \
+	sudo kiwi-ng --target-arch $(ARCH) --type oem system build \
+	  --description kiwi/ \
+	  --target-dir $(BUILD_OUTPUT) \
+	  $$kiwi_extra_repo \
+	  $(EXTRA_KIWI_OPTS) \
 	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-console.log
+	@# Rename kiwi output (e.g. centos-stream10-aarch64.aarch64-10.0.0.raw) to image.raw
+	@find $(BUILD_OUTPUT) -maxdepth 1 -name "*.raw" ! -name "image.raw" \
+	  | head -1 | xargs -I{} mv {} $(IMAGE_RAW) 2>/dev/null || true
+	@test -f $(IMAGE_RAW) || { echo "[!] kiwi did not produce $(IMAGE_RAW)"; exit 1; }
 
-image: $(QCOW2)
+image: $(IMAGE_RAW)
 
-$(FLASHIMAGES)/.extracted: $(QCOW2)
+dtbs: $(DTBS_TAR)
+
+$(FLASHIMAGES)/.extracted: $(IMAGE_RAW)
 	sudo scripts/extract_flash_artifacts.sh $< $(FLASHIMAGES)
 	@touch $@
 
@@ -97,6 +74,10 @@ flash: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
 clean:
 	rm -rf $(BUILD_OUTPUT) $(ARTIFACTDIR) $(BUILD_LOGS)
 
+# Remove cached repodata from the local packages directory
+clean-cache:
+	rm -rf $(KIWI_PACKAGES_DIR)/repodata
+
 # Remove cached boot-binary and CDT downloads
 clean-downloads:
 	rm -rf downloads/
@@ -105,26 +86,26 @@ help:
 	@echo "Usage: make [TARGET] [VARIABLE=value ...]"
 	@echo ""
 	@echo "Build targets:"
-	@echo "  image           Step 1: Build CentOS Stream qcow2 (image-builder-cli)"
-	@echo "  flash-artifacts Step 2: Extract EFI + rootfs from qcow2"
+	@echo "  image           Step 1: Build CentOS Stream 10 disk image (kiwi)"
+	@echo "  flash-artifacts Step 2: Extract EFI + rootfs from raw disk image"
 	@echo "  flash           Step 3: Assemble per-board flash packages"
 	@echo "  all             All steps (default)"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  clean           Remove build outputs (BUILD_OUTPUT, ARTIFACTDIR, BUILD_LOGS)"
+	@echo "  clean-cache     Remove local package repo repodata ($(KIWI_PACKAGES_DIR)/repodata)"
 	@echo "  clean-downloads Remove cached boot-binary and CDT downloads"
 	@echo "  help            Show this help"
 	@echo ""
 	@echo "Variables (override on command line):"
-	@echo "  DTBS_TAR             DTB tarball (auto: $(FLASHIMAGES)/dtbs.tar.gz from rootfs)"
-	@echo "  BLUEPRINT            Image blueprint TOML (default: $(BLUEPRINT))"
-	@echo "  DISTRO               OS distro for image-builder (default: $(DISTRO))"
-	@echo "  ARCH                 Target architecture (default: $(ARCH))"
-	@echo "  LOCAL_KERNEL_REPO    URL of local kernel RPM HTTP server (default: unset)"
-	@echo "  LOCAL_RPMS_DIR       Dir of local kernel RPMs mounted as a file:// repo (default: unset)"
-	@echo "  TARGET_BOARDS        Boards to flash (default: $(TARGET_BOARDS))"
-	@echo "                       Use 'all' to build all supported boards"
-	@echo "  ARTIFACTDIR          Flash package output directory (default: $(ARTIFACTDIR))"
-	@echo "  EXTRA_FLASH_OPTS     Extra flags for generate_flat_build.sh"
-	@echo "  EXTRA_IMAGE_BUILDER_OPTS  Extra flags for image-builder-cli"
-	@echo "  SBOM                 Generate SBOM; pass --with-sbom to image-builder-cli (default: 1)"
+	@echo "  ARCH               Target architecture for kiwi (default: $(ARCH))"
+	@echo "  DTBS_TAR           DTB tarball (auto: $(FLASHIMAGES)/dtbs.tar.gz from rootfs)"
+	@echo "  TARGET_BOARDS      Boards to flash (default: $(TARGET_BOARDS))"
+	@echo "                     Use 'all' to build all supported boards"
+	@echo "  ARTIFACTDIR        Flash package output directory (default: $(ARTIFACTDIR))"
+	@echo "  EXTRA_FLASH_OPTS   Extra flags for generate_flat_build.sh"
+	@echo "  EXTRA_KIWI_OPTS    Extra flags for kiwi-ng"
+	@echo "  KIWI_PACKAGES_DIR  Directory for custom RPMs (default: $(KIWI_PACKAGES_DIR))"
+	@echo ""
+	@echo "Example: include custom RPMs before 'make image':"
+	@echo "  cp work/linux/rpmbuild/RPMS/aarch64/*.rpm $(KIWI_PACKAGES_DIR)/"
