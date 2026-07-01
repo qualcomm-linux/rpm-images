@@ -102,6 +102,12 @@
     <package name="v4l-utils"/>
 
     <package name="pipewire"/>
+    <package name="wireplumber"/>
+    <package name="pipewire-pulseaudio"/>
+    <package name="alsa-utils"/>
+
+    <package name="libcamera-tools"/>
+    <package name="libcamera-v4l2"/>
   </packages>
 
 </image>
