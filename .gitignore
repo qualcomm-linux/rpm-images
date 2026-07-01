@@ -1,7 +1,8 @@
 build
 output
 scripts/output
-# kiwi build artefacts and local package repo index
-packages/
+# kiwi local package repo: ignore RPMs and generated repodata, keep the directory
+packages/*.rpm
+packages/repodata/
 # generated at CI build time by the workflow
 kiwi/root/etc/buildinfo

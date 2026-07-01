@@ -31,19 +31,16 @@ DTBS_TAR     := $(FLASHIMAGES)/dtbs.tar.gz
 
 all: flash
 
-$(IMAGE_RAW): kiwi/config.xml
-	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS) $(KIWI_PACKAGES_DIR)
-	@set -euo pipefail; \
-	kiwi_extra_repo=""; \
-	if ls $(KIWI_PACKAGES_DIR)/*.rpm 2>/dev/null | head -1 > /dev/null; then \
-	  echo "[*] Creating local package repository from $(KIWI_PACKAGES_DIR)/..."; \
-	  createrepo_c $(KIWI_PACKAGES_DIR)/; \
-	  kiwi_extra_repo="--add-repo file://$(CURDIR)/$(KIWI_PACKAGES_DIR),rpm-md,local-packages,1"; \
-	fi; \
+# Build (or refresh) the local RPM-MD repository index.
+$(KIWI_PACKAGES_DIR)/repodata: $(wildcard $(KIWI_PACKAGES_DIR)/*.rpm)
+	createrepo_c $(KIWI_PACKAGES_DIR)/
+
+$(IMAGE_RAW): kiwi/config.xml $(KIWI_PACKAGES_DIR)/repodata
+	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS)
 	sudo kiwi-ng --target-arch $(ARCH) --type oem system build \
 	  --description kiwi/ \
 	  --target-dir $(BUILD_OUTPUT) \
-	  $$kiwi_extra_repo \
+	  --add-repo file://$(CURDIR)/$(KIWI_PACKAGES_DIR),rpm-md,local-packages,1 \
 	  $(EXTRA_KIWI_OPTS) \
 	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-console.log
 	@# Rename kiwi output (e.g. centos-stream10-aarch64.aarch64-10.0.0.raw) to image.raw
@@ -74,7 +71,7 @@ flash: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
 clean:
 	rm -rf $(BUILD_OUTPUT) $(ARTIFACTDIR) $(BUILD_LOGS)
 
-# Remove cached repodata from the local packages directory
+# Remove the generated repodata index from the local packages directory
 clean-cache:
 	rm -rf $(KIWI_PACKAGES_DIR)/repodata
 

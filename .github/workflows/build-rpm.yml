@@ -119,8 +119,8 @@ jobs:
       - name: Stage kernel RPMs
         run: |
           set -euo pipefail
-          mkdir -p local-rpms
-          cp kernel-artifacts/RPMS/aarch64/*.rpm local-rpms/
+          mkdir -p packages
+          cp kernel-artifacts/RPMS/aarch64/*.rpm packages/
 
       - name: Write build ID into kiwi root overlay
         run: |
@@ -135,7 +135,6 @@ jobs:
           # `make flash` chains image -> flash-artifacts -> flash on a single
           # disk, so no intermediate binaries need to be passed between jobs.
           sudo HOME=/tmp make flash \
-            LOCAL_RPMS_DIR=local-rpms \
             TARGET_BOARDS=qcs6490-rb3gen2-vision-kit \
             EXTRA_FLASH_OPTS=--verbose=true
 
