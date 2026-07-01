@@ -11,15 +11,22 @@ set -euo pipefail
 # ── Hostname ──────────────────────────────────────────────────────────────────
 echo "centos" > /etc/hostname
 
-# ── Root password ─────────────────────────────────────────────────────────────
-echo "root:qcom" | chpasswd
-
 # ── Timezone ──────────────────────────────────────────────────────────────────
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 echo "UTC" > /etc/timezone
 
 # ── Locale ────────────────────────────────────────────────────────────────────
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
+
+# ── Default user ──────────────────────────────────────────────────────────────
+useradd --create-home --shell /bin/bash --user-group \
+    --groups wheel,audio,video,render,users qcom
+echo "qcom:qcom" | chpasswd
+# Force password change on first login
+chage --lastday 0 qcom
+mkdir -p /etc/sudoers.d
+echo "qcom ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-qcom
+chmod 440 /etc/sudoers.d/90-qcom
 
 # ── Services ──────────────────────────────────────────────────────────────────
 systemctl enable sshd.service        || true
