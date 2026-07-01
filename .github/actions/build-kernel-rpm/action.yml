@@ -2,13 +2,18 @@ name: Build kernel RPM
 description: >
   Install build dependencies and compile the QCOM kernel into
   binary RPMs via scripts/build_binrpm_pkg.py. The kernel is pinned to a
-  static branch (default qcom-6.18.y); override kernel-ref to build another.
+  static branch (default qcom-6.18.y); override kernel-ref/kernel-repo to
+  build another branch or fork.
 
 inputs:
   kernel-ref:
     description: Kernel branch/ref to build
     required: false
     default: qcom-6.18.y
+  kernel-repo:
+    description: Git repository URL to clone the kernel from
+    required: false
+    default: https://github.com/qualcomm-linux/kernel
 
 runs:
   using: composite
@@ -30,4 +35,5 @@ runs:
       run: |
         set -euo pipefail
         python3 scripts/build_binrpm_pkg.py \
-          --${{ inputs.kernel-ref }}
+          --repo "${{ inputs.kernel-repo }}" \
+          --ref  "${{ inputs.kernel-ref }}"
