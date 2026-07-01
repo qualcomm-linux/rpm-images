@@ -135,11 +135,34 @@ jobs:
           # make ran as root; hand the outputs back so later steps can read them.
           sudo chown -R "$(id -u):$(id -g)" build
 
-      - name: Stage SBOMs and flash packages for publishing
+      - name: Install Syft
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
+
+      - name: Generate SBOM with Syft
+        run: |
+          set -euo pipefail
+          mkdir -p rootfs-mount
+          sudo mount -o ro build/output/flashimages/rootfs.img rootfs-mount
+          SYFT_FORMAT_PRETTY=true bin/syft \
+              -o cyclonedx-json=rootfs-sbom.cyclonedx.json \
+              -o spdx-json=rootfs-sbom.spdx.json \
+              -o syft-json=rootfs-sbom.syft.json \
+              -o syft-text=rootfs-sbom.syft.txt \
+              -o syft-table \
+              --parallelism "$(nproc)" \
+              --select-catalogers rpm \
+              --source-name qualcomm-linux-rpm-rootfs \
+              --source-version "${BUILD_ID}" \
+              -v \
+              scan rootfs-mount
+          sudo umount rootfs-mount
+
+      - name: Stage flash packages for publishing
         run: |
           set -euo pipefail
           mkdir -p rpm-artifacts
-          find build/output -name '*.spdx.json' -exec cp -a {} rpm-artifacts/ \;
           for d in build/out/flash_*; do
             [ -d "$d" ] || continue
             board="$(basename "$d")"
@@ -154,6 +177,23 @@ jobs:
           path: rpm-artifacts
           s3_bucket: qli-prd-platform-gh-artifacts
           destination: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ env.BUILD_ID }}/
+          fileserver_url: ${{ env.FILESERVER_URL }}
+
+      - name: Stage SBOMs for publishing
+        run: |
+          set -euo pipefail
+          mkdir -p sboms
+          for f in rootfs-sbom.*; do
+            gzip -c "$f" > "sboms/${f}.gz"
+          done
+
+      - name: Upload SBOMs (S3)
+        uses: qualcomm-linux/upload-private-artifact-action@aws-v4
+        id: upload_sboms_s3
+        with:
+          path: sboms
+          s3_bucket: qli-prd-platform-gh-artifacts
+          destination: ${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ env.BUILD_ID }}/sboms/
           fileserver_url: ${{ env.FILESERVER_URL }}
 
       - name: Print download URL
