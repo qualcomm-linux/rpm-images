@@ -3,3 +3,5 @@ output
 scripts/output
 # kiwi build artefacts and local package repo index
 packages/
+# generated at CI build time by the workflow
+kiwi/root/etc/buildinfo

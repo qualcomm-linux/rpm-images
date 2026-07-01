@@ -122,6 +122,13 @@ jobs:
           mkdir -p local-rpms
           cp kernel-artifacts/RPMS/aarch64/*.rpm local-rpms/
 
+      - name: Write build ID into kiwi root overlay
+        run: |
+          set -euo pipefail
+          mkdir -p kiwi/root/etc
+          printf 'BUILD_ID=%s\n' "${BUILD_ID}" > kiwi/root/etc/buildinfo
+          chmod 644 kiwi/root/etc/buildinfo
+
       - name: Build image, extract, and assemble flash packages
         run: |
           set -euo pipefail
