@@ -21,7 +21,7 @@ ROOTDIR="${ROOTDIR:-$PWD/work}"
 ARTIFACTDIR="${ARTIFACTDIR:-$PWD/build/out}"
 DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
 
-QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/0909c6ea6e143e94beb8780b64172643d093d3d4.tar.gz"
+QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/6540ea3824aee6ffc8cac5670d87652cb21f046f.tar.gz"
 QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
 
 # VFAT sizing knobs (KiB)
