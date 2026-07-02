@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-License-Identifier: BSD-3-Clause-Clear
 #
 # Build Linux kernel Image + DTBs + modules and package RPMs
 # using: make binrpm-pkg

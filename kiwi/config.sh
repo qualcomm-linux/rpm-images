@@ -1,6 +1,6 @@
 #!/bin/bash
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-License-Identifier: BSD-3-Clause-Clear
 #
 # Kiwi post-install configuration script.
 # Runs inside the image chroot after all packages are installed.
@@ -22,8 +22,10 @@ echo "LANG=en_US.UTF-8" > /etc/locale.conf
 useradd --create-home --shell /bin/bash --user-group \
     --groups wheel,audio,video,render,users qcom
 echo "qcom:qcom" | chpasswd
+
 # Force password change on first login
 chage --lastday 0 qcom
+
 mkdir -p /etc/sudoers.d
 echo "qcom ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-qcom
 chmod 440 /etc/sudoers.d/90-qcom
