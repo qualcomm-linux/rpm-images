@@ -156,9 +156,9 @@ add_board() {
 add_board \
         "qcs6490-rb3gen2-vision-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
         "QCM6490 boot binaries" \
-        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00123/QCM6490_bootbinaries.zip" \
         "qcm6490_boot-binaries.zip" \
-        "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+        "df120b750128166c9f8f9ad28c7ecd30d3938c2750a250f2a12362757dc416b0" \
         "RB3 Gen2 Vision Kit CDT" \
         "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip" \
         "qcs6490-rb3gen2-vision-kit_cdt.zip" \
@@ -168,9 +168,9 @@ add_board \
 add_board \
         "qcs6490-rb3gen2-core-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
         "QCM6490 boot binaries" \
-        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00123/QCM6490_bootbinaries.zip" \
         "qcm6490_boot-binaries.zip" \
-        "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+        "df120b750128166c9f8f9ad28c7ecd30d3938c2750a250f2a12362757dc416b0" \
         "RB3 Gen2 Core Kit CDT" \
         "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip" \
         "qcs6490-rb3gen2-core-kit_cdt.zip" \
@@ -180,9 +180,9 @@ add_board \
 add_board \
         "qcs6490-rb3gen2-industrial-kit" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
         "QCM6490 boot binaries" \
-        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/software-product-family/Qualcomm_Linux.SPF.1.0/qualcomm_linux.spf.1.0-test-device-public/r1.0_00118.0/QCM6490.LE.1.0/common/build/ufs/bin/QCM6490_bootbinaries.zip" \
+        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00123/QCM6490_bootbinaries.zip" \
         "qcm6490_boot-binaries.zip" \
-        "754598969a7ef6b2df448fb64d4d6b762415e8a8ea3c2a202c9a0e98a930f432" \
+        "df120b750128166c9f8f9ad28c7ecd30d3938c2750a250f2a12362757dc416b0" \
         "RB3 Gen2 Industrial Kit CDT" \
         "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-kit.zip" \
         "qcs6490-rb3gen2-industrial-kit_cdt.zip" \
