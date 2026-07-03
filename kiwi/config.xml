@@ -20,6 +20,7 @@
           firmware="efi"
           efipartsize="512"
           target_blocksize="4096"
+          fsmountoptions="defaults,x-systemd.growfs"
           kernelcmdline="clk_ignore_unused pd_ignore_unused audit=0 root=PARTLABEL=rootfs rootwait rw deferred_probe_timeout=60 console=ttyMSM0,115200 qcom_scm.download_mode=1">
       <bootloader name="grub2" timeout="5"/>
       <oemconfig>
