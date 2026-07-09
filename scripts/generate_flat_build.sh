@@ -17,7 +17,6 @@ ESP_VFAT="${ESP_VFAT:-}"
 ROOTFS_EXT4="${ROOTFS_EXT4:-}"
 
 DTBS_TAR="${DTBS_TAR:-$PWD/linux/build/out/dtbs.tar.gz}"
-DTB_BIN="${DTB_BIN:-}"                  #optional override from fit_build.py
 VMLINUX_SRC="${VMLINUX_SRC:-}"        #optional override to a real kernel vmlinux file
 
 ROOTDIR="${ROOTDIR:-$PWD/work}"
@@ -79,7 +78,6 @@ for arg in "$@"; do
                 --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
 
                 --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
-                --dtb-bin=*)            DTB_BIN="${arg#*=}";;
                 --use-fit-image=*)      USE_FIT_IMAGE="${arg#*=}";;
                 --verbose=*)            VERBOSE="${arg#*=}";;
                 --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
@@ -605,24 +603,14 @@ if [[ -n "$ROOTFS_EXT4" ]]; then
         }
 fi
 
-DTB_BIN_SRC=""
-if [[ -n "$DTB_BIN" ]]; then
-        DTB_BIN_SRC="$(resolve_maybe_relative_to_artifactdir "$DTB_BIN" 2>/dev/null || true)"
-        if [[ -z "$DTB_BIN_SRC" || ! -f "$DTB_BIN_SRC" ]]; then
-                echo "ERROR: DTB_BIN not found: $DTB_BIN" >&2
-                exit 1
-        fi
-        echo "Using prebuilt DTB payload: $DTB_BIN_SRC"
+if [[ -n "$DTBS_TAR" ]]; then
+        DTBS_TAR="$(resolve_maybe_relative_to_artifactdir "$DTBS_TAR")" || {
+                echo "ERROR: --dtbs-tar not found: $DTBS_TAR" >&2
+                exit 7
+        }
 else
-        if [[ -n "$DTBS_TAR" ]]; then
-                DTBS_TAR="$(resolve_maybe_relative_to_artifactdir "$DTBS_TAR")" || {
-                        echo "ERROR: --dtbs-tar not found: $DTBS_TAR" >&2
-                        exit 7
-                }
-        else
-                echo "ERROR: Either --dtb-bin or --dtbs-tar must be provided" >&2
-                exit 11
-        fi
+        echo "ERROR: --dtbs-tar must be provided" >&2
+        exit 11
 fi
 
 QCOM_PTOOL_DIR="$(ensure_qcom_ptool)"
@@ -664,24 +652,21 @@ for ((i=0; i<BOARD_COUNT; i++)); do
 done
 
 DTBS_FILE="${BUILD_DIR}/dtbs.txt"; : >"$DTBS_FILE"
-# Build DTB listing only when operating in tar mode (no DTB_BIN provided)
-if [[ -z "$DTB_BIN" ]]; then
-        if [[ -f "$DTBS_TAR" ]]; then
-                tar -tzf "$DTBS_TAR" --wildcards '*.dtb' | sed 's#^\./##' | sort -u >"$DTBS_FILE"
-        else
-                echo "ERROR: dtbs.tar.gz not found at: $DTBS_TAR" >&2
-                exit 7
-        fi
+if [[ -f "$DTBS_TAR" ]]; then
+        tar -tzf "$DTBS_TAR" --wildcards '*.dtb' | sed 's#^\./##' | sort -u >"$DTBS_FILE"
+else
+        echo "ERROR: dtbs.tar.gz not found at: $DTBS_TAR" >&2
+        exit 7
 fi
 
 # ---- Auto-generate FIT multi-DTB image from dtbs.tar.gz --------------------
 #   1. Unpack qcom/ DTBs from dtbs.tar.gz into a staging directory
 #   2. Run build-dtb-image.sh --dtb-src <staging/qcom> --out dtb-multidtb.bin --prune
 #   3. Use the resulting FAT image as DTB_BIN_SRC for all boards
-#   Runs only when USE_FIT_IMAGE=true (default) and no --dtb-bin was supplied.
-#   On any failure, DTB_BIN_SRC is left empty and the per-board loop falls back
-#   to single-DTB mode.
-if [[ -z "$DTB_BIN_SRC" && "$USE_FIT_IMAGE" == "true" ]]; then
+#   Runs only when USE_FIT_IMAGE=true (default).  On any failure, DTB_BIN_SRC is
+#   left empty and the per-board loop falls back to single-DTB mode.
+DTB_BIN_SRC=""
+if [[ "$USE_FIT_IMAGE" == "true" ]]; then
 echo "[*] Attempting FIT multi-DTB image generation from $(basename "$DTBS_TAR") ..."
 _fit_ok=false
 if QCOM_DTB_METADATA_SCRIPT_DIR="$(ensure_qcom_dtb_metadata)"; then
@@ -716,7 +701,7 @@ else
         echo "WARNING: Could not fetch qcom-dtb-metadata; will fall back to single-DTB mode" >&2
 fi
 [[ "$_fit_ok" == "true" ]] || echo "[!] FIT generation failed — falling back to single-DTB mode"
-elif [[ "$USE_FIT_IMAGE" == "false" ]]; then
+else
         echo "[*] USE_FIT_IMAGE=false — using single-DTB mode"
 fi
 
