@@ -6,6 +6,9 @@ set -euo pipefail
 # ---- Defaults ---------------------------------------------------------------
 TARGET_BOARDS="${TARGET_BOARDS:-all}"
 
+# Image type: FIT multi-DTB (true) or single-DTB (false)
+USE_FIT_IMAGE="${USE_FIT_IMAGE:-true}"
+
 # Verbosity and safety
 VERBOSE="${VERBOSE:-false}"
 ALLOW_MISSING_SHA="${ALLOW_MISSING_SHA:-false}"
@@ -14,7 +17,6 @@ ESP_VFAT="${ESP_VFAT:-}"
 ROOTFS_EXT4="${ROOTFS_EXT4:-}"
 
 DTBS_TAR="${DTBS_TAR:-$PWD/linux/build/out/dtbs.tar.gz}"
-DTB_BIN="${DTB_BIN:-}"                  #optional override from fit_build.py
 VMLINUX_SRC="${VMLINUX_SRC:-}"        #optional override to a real kernel vmlinux file
 
 ROOTDIR="${ROOTDIR:-$PWD/work}"
@@ -23,6 +25,11 @@ DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
 
 QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/6540ea3824aee6ffc8cac5670d87652cb21f046f.tar.gz"
 QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
+
+# qcom-dtb-metadata: pinned commit that introduced build-dtb-image.sh
+QCOM_DTB_METADATA_URL="https://github.com/qualcomm-linux/qcom-dtb-metadata.git"
+QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-bf8f11f5274d850f71cc1af8b5a5c46683c14eee}"
+QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
 
 # VFAT sizing knobs (KiB)
 # Use 4096-byte sectors to match UFS 4K sector size (same as qcom-deb-images).
@@ -43,8 +50,12 @@ Optional flat images (filenames are rewired to match their basenames):
   --rootfs-ext4=<path/to/rootfs.img>
 DTB handling:
   --dtbs-tar=<path/to/dtbs.tar.gz>  default: "$PWD/linux/build/out/dtbs.tar.gz"
-  --dtb-bin=<path/to/dtb.bin>      optional; if provided, use dtb.bin directly and skip dtbs.tar.gz
-                                     precedence: DTB_BIN overrides DTBS_TAR mode
+  --use-fit-image=(true|false)      default: true
+                                     true  = generate FIT multi-DTB image via build-dtb-image.sh
+                                             (falls back to single-DTB on failure)
+                                     false = single-DTB mode: extract per-board DTB from dtbs.tar.gz
+                                             and pack into a VFAT image
+  QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit (default: $QCOM_DTB_METADATA_COMMIT)
 Kernel artifact:
   VMLINUX_SRC=<path/to/vmlinux>    optional; use a known-good kernel ELF instead of rootfs extraction
 Logging and safety:
@@ -67,8 +78,7 @@ for arg in "$@"; do
                 --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
 
                 --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
-                --dtb-bin=*)            DTB_BIN="${arg#*=}";;
-
+                --use-fit-image=*)      USE_FIT_IMAGE="${arg#*=}";;
                 --verbose=*)            VERBOSE="${arg#*=}";;
                 --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
 
@@ -79,7 +89,7 @@ done
 
 # ---- Helpers: deps & utils ---------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
-need curl; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3
+need curl; need git; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3
 
 normalize_bool() {
         local v
@@ -102,7 +112,7 @@ dbg() {
 }
 
 # Normalize boolean flags
-for _b in VERBOSE ALLOW_MISSING_SHA; do
+for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE; do
         val=$(normalize_bool "${!_b}")
         if [[ "$val" == "INVALID" ]]; then
                 echo "Invalid boolean for $_b: ${!_b}. Use true/false (or 1/0/yes/no)." >&2
@@ -241,6 +251,27 @@ ensure_qcom_ptool() {
         [[ -f "$dest/qcom_ptool/gen_partition.py" ]] || { echo "qcom-ptool unpack failed (gen_partition.py missing)" >&2; exit 3; }
         echo "$cur_sha" > "$sha_file"
         echo "$dest"  # ONLY return value on stdout
+}
+
+ensure_qcom_dtb_metadata() {
+        local dest="$QCOM_DTB_METADATA_DIR"
+        if [[ ! -d "$dest/.git" ]]; then
+                echo "Cloning qcom-dtb-metadata -> $dest" >&2
+                git clone "$QCOM_DTB_METADATA_URL" "$dest" >&2
+        fi
+        # Only fetch from origin if the pinned commit is not already present locally.
+        # This avoids a slow/fragile network round-trip on every invocation.
+        if ! git -C "$dest" cat-file -e "${QCOM_DTB_METADATA_COMMIT}^{commit}" 2>/dev/null; then
+                echo "Fetching qcom-dtb-metadata (need $QCOM_DTB_METADATA_COMMIT)" >&2
+                git -C "$dest" fetch origin >&2
+        fi
+        git -C "$dest" checkout "$QCOM_DTB_METADATA_COMMIT" >&2
+        local script="$dest/build-dtb-image.sh"
+        [[ -f "$script" ]] || {
+                echo "WARNING: build-dtb-image.sh not found in $dest (commit $QCOM_DTB_METADATA_COMMIT)" >&2
+                return 1
+        }
+        echo "$dest"
 }
 
 resolve_maybe_relative_to_artifactdir() {
@@ -572,24 +603,14 @@ if [[ -n "$ROOTFS_EXT4" ]]; then
         }
 fi
 
-DTB_BIN_SRC=""
-if [[ -n "$DTB_BIN" ]]; then
-        DTB_BIN_SRC="$(resolve_maybe_relative_to_artifactdir "$DTB_BIN" 2>/dev/null || true)"
-        if [[ -z "$DTB_BIN_SRC" || ! -f "$DTB_BIN_SRC" ]]; then
-                echo "ERROR: DTB_BIN not found: $DTB_BIN" >&2
-                exit 1
-        fi
-        echo "Using prebuilt DTB payload: $DTB_BIN_SRC"
+if [[ -n "$DTBS_TAR" ]]; then
+        DTBS_TAR="$(resolve_maybe_relative_to_artifactdir "$DTBS_TAR")" || {
+                echo "ERROR: --dtbs-tar not found: $DTBS_TAR" >&2
+                exit 7
+        }
 else
-        if [[ -n "$DTBS_TAR" ]]; then
-                DTBS_TAR="$(resolve_maybe_relative_to_artifactdir "$DTBS_TAR")" || {
-                        echo "ERROR: --dtbs-tar not found: $DTBS_TAR" >&2
-                        exit 7
-                }
-        else
-                echo "ERROR: Either --dtb-bin or --dtbs-tar must be provided" >&2
-                exit 11
-        fi
+        echo "ERROR: --dtbs-tar must be provided" >&2
+        exit 11
 fi
 
 QCOM_PTOOL_DIR="$(ensure_qcom_ptool)"
@@ -631,14 +652,57 @@ for ((i=0; i<BOARD_COUNT; i++)); do
 done
 
 DTBS_FILE="${BUILD_DIR}/dtbs.txt"; : >"$DTBS_FILE"
-# Build DTB listing only when operating in tar mode (no DTB_BIN provided)
-if [[ -z "$DTB_BIN" ]]; then
-        if [[ -f "$DTBS_TAR" ]]; then
-                tar -tzf "$DTBS_TAR" --wildcards '*.dtb' | sed 's#^\./##' | sort -u >"$DTBS_FILE"
-        else
-                echo "ERROR: dtbs.tar.gz not found at: $DTBS_TAR" >&2
-                exit 7
+if [[ -f "$DTBS_TAR" ]]; then
+        tar -tzf "$DTBS_TAR" --wildcards '*.dtb' | sed 's#^\./##' | sort -u >"$DTBS_FILE"
+else
+        echo "ERROR: dtbs.tar.gz not found at: $DTBS_TAR" >&2
+        exit 7
+fi
+
+# ---- Auto-generate FIT multi-DTB image from dtbs.tar.gz --------------------
+#   1. Unpack qcom/ DTBs from dtbs.tar.gz into a staging directory
+#   2. Run build-dtb-image.sh --dtb-src <staging/qcom> --out dtb-multidtb.bin --prune
+#   3. Use the resulting FAT image as DTB_BIN_SRC for all boards
+#   Runs only when USE_FIT_IMAGE=true (default).  On any failure, DTB_BIN_SRC is
+#   left empty and the per-board loop falls back to single-DTB mode.
+DTB_BIN_SRC=""
+if [[ "$USE_FIT_IMAGE" == "true" ]]; then
+echo "[*] Attempting FIT multi-DTB image generation from $(basename "$DTBS_TAR") ..."
+_fit_ok=false
+if QCOM_DTB_METADATA_SCRIPT_DIR="$(ensure_qcom_dtb_metadata)"; then
+        DTB_STAGING="${BUILD_DIR}/dtbs_fit_staging"
+        mkdir -p "$DTB_STAGING"
+        # Unpack only the qcom/ subtree.
+        # Entries may be prefixed with "./" (kiwi/rpm-images layout) or bare
+        # "qcom/" (some other tarballs).  Try the ./ form first, then bare.
+        if ! tar -C "$DTB_STAGING" -xzf "$DTBS_TAR" ./qcom 2>/dev/null; then
+                tar -C "$DTB_STAGING" -xzf "$DTBS_TAR" qcom 2>/dev/null || true
         fi
+        if [[ ! -d "$DTB_STAGING/qcom" ]]; then
+                echo "WARNING: No qcom/ subtree found in $(basename "$DTBS_TAR"); skipping FIT generation" >&2
+        else
+                DTB_MULTIDTB_BIN="${ARTIFACTDIR}/dtb-multidtb.bin"
+                if bash "$QCOM_DTB_METADATA_SCRIPT_DIR/build-dtb-image.sh" \
+                        --dtb-src "$DTB_STAGING/qcom" \
+                        --out "$DTB_MULTIDTB_BIN" \
+                        --prune; then
+                        if [[ -f "$DTB_MULTIDTB_BIN" ]]; then
+                                echo "[✓] FIT multi-DTB image generated: $DTB_MULTIDTB_BIN"
+                                DTB_BIN_SRC="$DTB_MULTIDTB_BIN"
+                                _fit_ok=true
+                        else
+                                echo "WARNING: build-dtb-image.sh succeeded but $DTB_MULTIDTB_BIN was not created" >&2
+                        fi
+                else
+                        echo "WARNING: build-dtb-image.sh failed; will fall back to single-DTB mode" >&2
+                fi
+        fi
+else
+        echo "WARNING: Could not fetch qcom-dtb-metadata; will fall back to single-DTB mode" >&2
+fi
+[[ "$_fit_ok" == "true" ]] || echo "[!] FIT generation failed — falling back to single-DTB mode"
+else
+        echo "[*] USE_FIT_IMAGE=false — using single-DTB mode"
 fi
 
 # Helper to create one or more DTB VFAT images
@@ -677,9 +741,9 @@ create_fit_dtb_vfat_artifacts() {
         echo "${vfat_names[0]}"
 }
 
-# Legacy mode:
+# Single-DTB mode:
 # Extract the requested DTB from dtbs.tar.gz and package it as combined-dtb.dtb.
-create_legacy_dtb_vfat_from_tar() {
+create_single_dtb_vfat_from_tar() {
         local dtb_path_in_tar="$1"
         local out_vfat="$2"
 
@@ -731,9 +795,6 @@ for ((i=0; i<BOARD_COUNT; i++)); do
     dtb="${BOARD_DTB[i]}"
     cdt_board_file="${CDT_BOARD_FILE[i]}"
 
-    artifact_src=""
-    resolved_dtb=""
-
     echo "=== Board: $name ==="
 
     if [[ "$VERBOSE" == "true" ]]; then
@@ -759,46 +820,6 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         continue
     fi
 
-    # Resolve artifact source - EXCLUSIVE OR between dtb.bin and dtbs.tar.gz
-    if [[ -n "$DTB_BIN_SRC" ]]; then
-        artifact_src="$DTB_BIN_SRC"
-        echo "Using FIT DTB payload: $artifact_src"
-    else
-        # dtbs.tar.gz mode: locate requested DTB path from listing
-        resolved_dtb="$(resolve_dtb_path "$dtb" "$DTBS_FILE" || true)"
-        if [[ -z "$resolved_dtb" ]]; then
-            echo "Skipping $name: DTB '$dtb' not found in $(basename "$DTBS_TAR")"
-            suggest_dtb_candidates "$dtb" "$DTBS_FILE"
-            BOARD_RESULT["$name"]="SKIPPED"
-            BOARD_REASON["$name"]="DTB not found"
-            for platform in $platforms; do
-                PLAT_RESULT["$name/$platform"]="SKIPPED"
-                PLAT_REASON["$name/$platform"]="DTB not found"
-            done
-            continue
-        fi
-
-        # Extract DTB from tar
-        extract_dir="${BUILD_DIR}/dtbs_extract.$$"
-        rm -rf "$extract_dir"
-        mkdir -p "$extract_dir"
-
-        if tar -C "$extract_dir" -xzf "$DTBS_TAR" "$resolved_dtb" 2>/dev/null \
-           || tar -C "$extract_dir" -xzf "$DTBS_TAR" "./$resolved_dtb" 2>/dev/null; then
-            if [[ -f "$extract_dir/$resolved_dtb" ]]; then
-                artifact_src="$extract_dir/$resolved_dtb"
-            elif [[ -f "$extract_dir/$(basename "$resolved_dtb")" ]]; then
-                artifact_src="$extract_dir/$(basename "$resolved_dtb")"
-            fi
-        fi
-
-        [[ -f "$artifact_src" ]] || {
-            echo "ERROR: Failed to extract DTB $resolved_dtb from $DTBS_TAR" >&2
-            exit 18
-        }
-        echo "Using resolved DTB: $artifact_src"
-    fi
-
     # Unzip boot and CDT only for targeted boards
     [[ -f "$DOWNLOADDIR/${BOOT_FILENAME[i]}" ]] || {
         echo "ERROR: Missing boot binaries zip for $name: $DOWNLOADDIR/${BOOT_FILENAME[i]}" >&2
@@ -822,25 +843,24 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         [[ -n "$ROOTFS_EXT4" ]] && rootfs_base="$(basename "$ROOTFS_EXT4")"
 
         mkdir -p "${BUILD_DIR}/ptool/${platform}"
-        cp --preserve=mode,timestamps -v "$artifact_src" "${BUILD_DIR}/ptool/${platform}/dtb.bin"
-        dtb_filename="dtb.bin"
+        # Stage dtb.bin for ptool only when FIT image is available;
+        # in single-DTB fallback mode dtb.bin is written directly into flash_dir later.
+        dtb_filename=""
         if [[ -n "$DTB_BIN_SRC" ]]; then
-                main_base="$(normalize_board_base "$name")"
-        else
-                main_base="$(basename "$resolved_dtb")"
-                main_base="${main_base%.dtb}"
+            cp --preserve=mode,timestamps -v "$DTB_BIN_SRC" "${BUILD_DIR}/ptool/${platform}/dtb.bin"
+            dtb_filename="dtb.bin"
         fi
+        main_base="$(normalize_board_base "$name")"
 
         dbg "  -> Platform build"
         dbg "     platform                  : $platform"
-        dbg "     dtb_filename              : $dtb_filename"
+        dbg "     dtb_filename              : ${dtb_filename:-<single-dtb-fallback>}"
         dbg "     main_base                 : $main_base"
         dbg "     ESP_VFAT                  : ${ESP_VFAT:-<none>}"
         dbg "     esp_base                  : ${esp_base:-<none>}"
         dbg "     ROOTFS_EXT4               : ${ROOTFS_EXT4:-<none>}"
         dbg "     rootfs_base               : ${rootfs_base:-<none>}"
         dbg "     CDT board file            : ${cdt_board_file:-<none>}"
-        dbg "     resolved DTB              : ${resolved_dtb:-<none>}"
         dbg "     QCOM_PTOOL_DIR            : ${QCOM_PTOOL_DIR:-<none>}"
 
         # Generate ptool layout ONCE per platform
@@ -897,44 +917,37 @@ for ((i=0; i<BOARD_COUNT; i++)); do
 
         # ---------------------------------------------------------------------
         # DTB artifacts
-        # FIT mode:
-        #   - consume prebuilt dtb.bin from fit_build.py
-        #   - stage raw dtb.bin
-        #   - create flashable VFAT artifact if needed
-        #
-        # Legacy mode:
-        #   - extract requested DTB from dtbs.tar.gz
-        #   - create dtb.bin and named VFAT artifact(s)
+        #   FIT mode  (DTB_BIN_SRC set): dtb-multidtb.bin is a 4 MiB FAT image
+        #     containing qclinux_fit.img (filename hardcoded in UEFI firmware).
+        #     Copy it as dtb.bin and create named .vfat aliases.
+        #   Single-DTB fallback (DTB_BIN_SRC empty): extract the per-board .dtb from
+        #     dtbs.tar.gz and pack it into a VFAT image as combined-dtb.dtb.
         # ---------------------------------------------------------------------
         if [[ -n "$DTB_BIN_SRC" ]]; then
-            # dtb.bin from fit_build.py is already a complete FAT image
-            # (4 MiB, 4096-byte sectors) containing qclinux_fit.img — the
-            # filename hardcoded in UEFI firmware.  Copy it as dtb.bin (the
-            # file referenced by rawprogram*.xml / contents.xml) and create
-            # named .vfat aliases matching meta-qcom dtb-*-image.vfat layout.
+            echo "[FIT] Using FIT multi-DTB image for $name/$platform"
             cp --preserve=mode,timestamps -f "$DTB_BIN_SRC" "$flash_dir/dtb.bin"
             create_fit_dtb_vfat_artifacts "$DTB_BIN_SRC" "$flash_dir" "$name" >/dev/null
         else
-            if [[ ! -f "$DTBS_TAR" ]]; then
-                echo "WARNING: Omitting DTB artifacts for $name/$platform: dtbs tar not found" >&2
+            echo "[single-DTB] Using single-DTB fallback for $name/$platform (dtb: $dtb)"
+            resolved_dtb="$(resolve_dtb_path "$dtb" "$DTBS_FILE" || true)"
+            if [[ -z "$resolved_dtb" ]]; then
+                echo "WARNING: DTB '$dtb' not found in $(basename "$DTBS_TAR"); skipping DTB artifacts for $name/$platform" >&2
+                suggest_dtb_candidates "$dtb" "$DTBS_FILE"
             else
-                # Legacy packed DTB artifact
-                legacy_dtb_vfat="${flash_dir}/dtb.bin"
-                rm -f "$legacy_dtb_vfat"
-                create_legacy_dtb_vfat_from_tar "$dtb" "$legacy_dtb_vfat"
+                single_dtb_vfat="${flash_dir}/dtb.bin"
+                rm -f "$single_dtb_vfat"
+                create_single_dtb_vfat_from_tar "$resolved_dtb" "$single_dtb_vfat"
 
-                # Legacy-compatible named artifact
                 main_vfat="${flash_dir}/dtb-${main_base}-image.vfat"
                 rm -f "$main_vfat"
-                create_legacy_dtb_vfat_from_tar "$dtb" "$main_vfat"
+                create_single_dtb_vfat_from_tar "$resolved_dtb" "$main_vfat"
 
-                # Board-specific legacy variants for vision-kit
+                # Board-specific single-DTB variants for vision-kit
                 if [[ "$name" == "qcs6490-rb3gen2-vision-kit" ]]; then
                     for variant in industrial-mezzanine vision-mezzanine; do
-                        var_base="${main_base}-${variant}"
-                        var_vfat="${flash_dir}/dtb-${var_base}-image.vfat"
+                        var_vfat="${flash_dir}/dtb-${main_base}-${variant}-image.vfat"
                         rm -f "$var_vfat"
-                        create_legacy_dtb_vfat_from_tar "$dtb" "$var_vfat"
+                        create_single_dtb_vfat_from_tar "$resolved_dtb" "$var_vfat"
                     done
                 fi
             fi

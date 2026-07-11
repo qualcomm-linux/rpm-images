@@ -134,8 +134,11 @@ jobs:
           set -euo pipefail
           # `make flash` chains image -> flash-artifacts -> flash on a single
           # disk, so no intermediate binaries need to be passed between jobs.
+          # USE_FIT_IMAGE=1 (default) generates a FIT multi-DTB image via
+          # build-dtb-image.sh from qcom-dtb-metadata.
           sudo HOME=/tmp make flash \
             TARGET_BOARDS=qcs6490-rb3gen2-vision-kit \
+            USE_FIT_IMAGE=1 \
             EXTRA_FLASH_OPTS=--verbose=true
 
           # make ran as root; hand the outputs back so later steps can read them.

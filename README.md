@@ -8,6 +8,7 @@ Generates CentOS Stream 10 (aarch64) disk images for Qualcomm RB3 Gen2 platforms
 
 - Custom Linux kernel compilation (QCOM kernels, linux-next, upstream)
 - CentOS Stream 10 OS image generation using **kiwi-ng**
+- FIT multi-DTB image generation via `build-dtb-image.sh`
 - Board-specific flash artifact generation (`generate_flat_build.sh`)
 
 ---
@@ -257,17 +258,16 @@ make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit
 make flash TARGET_BOARDS=qcs6490-rb3gen2-vision-kit,qcs6490-rb3gen2-core-kit
 ```
 
-#### Key options
+#### Key options (`generate_flat_build.sh`)
 
 | Option | Default | Description |
 |---|---|---|
-| `--dtb-bin=<path>` | — | FIT DTB VFAT image from `fit_build.py` (preferred) |
-| `--dtbs-tar=<path>` | `flashimages/dtbs.tar.gz` | Legacy DTB tarball (fallback) |
+| `--dtbs-tar=<path>` | `flashimages/dtbs.tar.gz` | DTB tarball; FIT image auto-generated from it; falls back to single-DTB on failure |
 | `--esp-vfat=<path>` | — | EFI System Partition image |
 | `--rootfs-ext4=<path>` | — | Root filesystem image |
 | `--target-boards=<list\|all>` | `all` | Comma-separated board names or `all` |
+| `--use-fit-image=(true\|false)` | `true` | `true` = FIT multi-DTB via `build-dtb-image.sh` (falls back to single-DTB on failure); `false` = single-DTB |
 | `--verbose=(true\|false)` | `false` | Enable debug output |
-| `ARTIFACTDIR=<path>` | `$PWD/build/out` | Output directory (env var) |
 
 #### Makefile variables
 
@@ -278,12 +278,18 @@ these overrides on the command line (see `make help` for the full list):
 |---|---|---|
 | `LOCAL_RPMS_DIR` | _unset_ | Directory of local kernel RPMs; mounted as a `file://` dnf repo for `make image` |
 | `LOCAL_KERNEL_REPO` | _unset_ | URL of a local HTTP server serving kernel RPMs |
+| `ARCH` | `aarch64` | Target architecture passed to kiwi-ng |
 | `TARGET_BOARDS` | `qcs6490-rb3gen2-vision-kit` | Comma-separated boards (or `all`) for `make flash` |
+| `USE_FIT_IMAGE` | `1` | `1` = FIT multi-DTB image (recommended); `0` = single-DTB VFAT |
+| `ARTIFACTDIR` | `build/out` | Flash package output directory |
 | `EXTRA_FLASH_OPTS` | _unset_ | Extra flags forwarded to `generate_flat_build.sh` |
+| `EXTRA_KIWI_OPTS` | _unset_ | Extra flags forwarded to `kiwi-ng` |
+| `KIWI_PACKAGES_DIR` | `packages` | Directory for custom kernel RPMs |
 
 **Flash outputs**
 ```
 build/out/
+├── dtb-multidtb.bin              # FIT multi-DTB FAT image (USE_FIT_IMAGE=1)
 └── flash_<board>_<ufs>/
     ├── prog_firehose_ddr_*.elf   # Firehose programmer
     ├── rawprogram*.xml           # Flash programming script
@@ -291,7 +297,9 @@ build/out/
     ├── gpt_*.bin                 # GPT partition table
     ├── efi.bin                   # EFI System Partition
     ├── rootfs.img                # Root filesystem
-    ├── dtb.bin                   # DTB VFAT (FIT or legacy)
+    ├── dtb.bin                   # DTB VFAT (FIT multi-DTB or single-DTB)
+    ├── dtb-multi-dtb-image.vfat  # FIT multi-DTB alias (USE_FIT_IMAGE=1)
+    ├── dtb-<soc>-image.vfat      # SoC-specific DTB alias (USE_FIT_IMAGE=1)
     ├── cdt_*.bin                 # Board CDT
     └── vmlinux                   # Kernel ELF (for crash debugging)
 ```
