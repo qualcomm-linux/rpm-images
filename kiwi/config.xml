@@ -76,6 +76,7 @@
     <package name="qcom-firmware"/>
 
     <package name="kernel"/>
+    <package name="kernel-headers"/>
     <package name="kmod"/>
     <package name="dracut"/>
     <!-- Required by kiwi for oem image type (first-boot partition resize) -->
