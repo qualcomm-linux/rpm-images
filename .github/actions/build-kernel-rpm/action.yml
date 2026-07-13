@@ -32,8 +32,11 @@ runs:
 
     - name: Build kernel RPMs
       shell: bash
+      env:
+        KERNEL_REPO: ${{ inputs.kernel-repo }}
+        KERNEL_REF: ${{ inputs.kernel-ref }}
       run: |
         set -euo pipefail
         python3 scripts/build_binrpm_pkg.py \
-          --repo "${{ inputs.kernel-repo }}" \
-          --ref  "${{ inputs.kernel-ref }}"
+          --repo "$KERNEL_REPO" \
+          --ref  "$KERNEL_REF"

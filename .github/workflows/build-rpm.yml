@@ -144,10 +144,16 @@ jobs:
           # make ran as root; hand the outputs back so later steps can read them.
           sudo chown -R "$(id -u):$(id -g)" build
 
+      - name: Install cosign
+        # Required so the syft installer can verify the release signature (-v).
+        uses: sigstore/cosign-installer@v4.1.2
+
       - name: Install Syft
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh -o install-syft.sh
+          sh install-syft.sh -v
+          rm -f install-syft.sh
 
       - name: Generate SBOM with Syft
         run: |
