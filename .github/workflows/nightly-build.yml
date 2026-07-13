@@ -17,4 +17,3 @@ permissions:
 jobs:
   build-nightly:
     uses: ./.github/workflows/build-rpm.yml
-    secrets: inherit
