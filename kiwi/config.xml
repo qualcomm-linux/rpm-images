@@ -77,6 +77,7 @@
 
     <package name="kernel"/>
     <package name="kernel-headers"/>
+    <package name="kernel-devel"/>
     <package name="kmod"/>
     <package name="dracut"/>
     <!-- Required by kiwi for oem image type (first-boot partition resize) -->
