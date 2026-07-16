@@ -41,7 +41,7 @@ sudo pipx ensurepath   # then restart your shell
 ```bash
 # Fedora / CentOS Stream
 sudo dnf install python3 git curl unzip dosfstools mtools rpm-build dtc uboot-tools \
-                 createrepo-c binfmt-support qemu-user-static parted kpartx \
+                 createrepo_c e2fsprogs xfsprogs binfmt-support qemu-user-static parted kpartx \
                  grub2-efi-aa64 shim pipx
 
 # Ubuntu / Debian
@@ -88,8 +88,8 @@ Minimum **50 GB** free in the build directory.
 │   ├── config.xml               # kiwi image description (repos, packages, type)
 │   ├── config.sh                # Post-install script (hostname, password, locale)
 │   └── root/
-│       └── etc/repart.d/
-│           └── 50-root.conf     # Auto-grow root partition on first boot
+│       └── usr/lib/repart.d/
+│           └── 10-root.conf     # Auto-grow root partition on first boot
 ├── packages/                    # Drop custom kernel RPMs here before building
 ├── scripts/
 │   ├── build_binrpm_pkg.py      # Kernel RPM builder
@@ -205,8 +205,6 @@ sudo scripts/extract_flash_artifacts.sh \
   build/output/flashimages
 ```
 
-</details>
-
 **Outputs**
 ```
 build/output/flashimages/
@@ -276,8 +274,6 @@ these overrides on the command line (see `make help` for the full list):
 
 | Variable | Default | Description |
 |---|---|---|
-| `LOCAL_RPMS_DIR` | _unset_ | Directory of local kernel RPMs; mounted as a `file://` dnf repo for `make image` |
-| `LOCAL_KERNEL_REPO` | _unset_ | URL of a local HTTP server serving kernel RPMs |
 | `ARCH` | `aarch64` | Target architecture passed to kiwi-ng |
 | `TARGET_BOARDS` | `qcs6490-rb3gen2-vision-kit` | Comma-separated boards (or `all`) for `make flash` |
 | `USE_FIT_IMAGE` | `1` | `1` = FIT multi-DTB image (recommended); `0` = single-DTB VFAT |
