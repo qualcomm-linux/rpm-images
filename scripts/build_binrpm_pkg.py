@@ -101,8 +101,8 @@ def main():
     parser.add_argument("--ref", default=GIT_REF)
     parser.add_argument("--linux-next", action="store_true")
     parser.add_argument("--qcom-next", action="store_true")
-    parser.add_argument("--qcom-6.18.y", dest="qcom_618y", action="store_true",
-                        help="Use qcom-6.18.y branch from qualcomm-linux/kernel")
+    parser.add_argument("--qcom-6.18.y", dest="qcom_618y", action="store_true", default=True,
+                        help="Use qcom-6.18.y branch from qualcomm-linux/kernel (default)")
 
     parser.add_argument("--local-dir", type=str, default=None,
                         help="Use existing kernel source tree instead of cloning")
