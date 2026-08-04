@@ -66,6 +66,7 @@
     <package name="NetworkManager-wifi"/>
     <package name="iproute"/>
     <package name="rfkill"/>
+    <package name="chrony"/>
     <package name="wireless-regdb"/>
     <package name="wpa_supplicant"/>
     <package name="bluez"/>
