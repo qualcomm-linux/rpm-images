@@ -9,6 +9,9 @@ ARCH     ?= aarch64
 BUILD_OUTPUT ?= build/output
 BUILD_LOGS   ?= build/logs
 
+# Kiwi profile: console (headless, default) or gui (GNOME desktop)
+KIWI_PROFILE     ?= console
+
 # Optional: extra kiwi-ng flags
 EXTRA_KIWI_OPTS ?=
 
@@ -39,12 +42,12 @@ $(KIWI_PACKAGES_DIR)/repodata: $(wildcard $(KIWI_PACKAGES_DIR)/*.rpm)
 
 $(IMAGE_RAW): kiwi/config.xml $(KIWI_PACKAGES_DIR)/repodata
 	mkdir -p $(BUILD_OUTPUT) $(BUILD_LOGS)
-	sudo kiwi-ng --target-arch $(ARCH) --type oem system build \
+	sudo kiwi-ng --target-arch $(ARCH) --profile $(KIWI_PROFILE) --type oem system build \
 	  --description kiwi/ \
 	  --target-dir $(BUILD_OUTPUT) \
 	  --add-repo file://$(CURDIR)/$(KIWI_PACKAGES_DIR),rpm-md,local-packages,1 \
 	  $(EXTRA_KIWI_OPTS) \
-	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-console.log
+	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-$(KIWI_PROFILE).log
 	@# Rename kiwi output (e.g. centos-stream10-aarch64.aarch64-10.0.0.raw) to image.raw
 	@find $(BUILD_OUTPUT) -maxdepth 1 -name "*.raw" ! -name "image.raw" \
 	  | head -1 | xargs -I{} mv {} $(IMAGE_RAW) 2>/dev/null || true
@@ -109,6 +112,11 @@ help:
 	@echo "  EXTRA_FLASH_OPTS   Extra flags for generate_flat_build.sh"
 	@echo "  EXTRA_KIWI_OPTS    Extra flags for kiwi-ng"
 	@echo "  KIWI_PACKAGES_DIR  Directory for custom RPMs (default: $(KIWI_PACKAGES_DIR))"
+	@echo "  KIWI_PROFILE       Image profile: console (default) = headless"
+	@echo "                                    gui               = GNOME desktop"
 	@echo ""
 	@echo "Example: include custom RPMs before 'make image':"
 	@echo "  cp work/linux/rpmbuild/RPMS/aarch64/*.rpm $(KIWI_PACKAGES_DIR)/"
+	@echo ""
+	@echo "Example: build GNOME desktop image:"
+	@echo "  make flash KIWI_PROFILE=gui"
