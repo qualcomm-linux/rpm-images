@@ -33,3 +33,10 @@ chmod 440 /etc/sudoers.d/90-qcom
 # ── Services ──────────────────────────────────────────────────────────────────
 systemctl enable sshd.service        || true
 systemctl enable NetworkManager.service || true
+
+# ── GNOME desktop (gui profile only) ─────────────────────────────────────────
+# kiwi sets KIWI_PROFILES as a comma-separated list of active profiles.
+if echo "${KIWI_PROFILES:-}" | grep -qw "gui"; then
+    systemctl set-default graphical.target
+    systemctl enable gdm.service || true
+fi

@@ -3,6 +3,14 @@
 <!-- SPDX-License-Identifier: BSD-3-Clause-Clear -->
 <!-- Kiwi image description for CentOS Stream 10 (aarch64) on Qualcomm RB3 Gen2. -->
 <!-- See https://osinside.github.io/kiwi/ for kiwi documentation.              -->
+<!--                                                                            -->
+<!-- Profiles                                                                   -->
+<!--   console  – headless base image (networking, firmware, kernel, tools)    -->
+<!--   gui      – GNOME desktop on top of console (depends on console)         -->
+<!--                                                                            -->
+<!-- Build a specific profile:                                                  -->
+<!--   kiwi-ng - -profile console system build ...                              -->
+<!--   kiwi-ng - -profile gui    system build ...                               -->
 <image schemaversion="7.6" name="centos-stream10-aarch64">
 
   <description type="system">
@@ -10,6 +18,12 @@
     <contact>linux@qualcomm.com</contact>
     <specification>CentOS Stream 10 disk image for Qualcomm RB3 Gen2 (aarch64)</specification>
   </description>
+
+  <!-- ── Profile definitions ──────────────────────────────────────────────── -->
+  <profiles>
+    <profile name="console" description="Headless console image"/>
+    <profile name="gui"     description="GNOME desktop image (includes console)"/>
+  </profiles>
 
   <preferences>
     <version>10.0.0</version>
@@ -60,7 +74,7 @@
   </packages>
 
   <!-- Image packages -->
-  <packages type="image">
+  <packages type="image" profiles="console,gui">
     <!-- Networking -->
     <package name="NetworkManager"/>
     <package name="NetworkManager-wifi"/>
@@ -113,6 +127,19 @@
     <package name="libcamera-tools"/>
     <package name="libcamera-v4l2"/>
     <package name="epel-release"/>
+  </packages>
+
+  <!-- ── gui profile packages (GNOME desktop) ─────────────────────────────── -->
+  <packages type="image" profiles="gui">
+    <package name="gdm"/>
+    <package name="gnome-control-center"/>
+    <package name="gnome-session"/>
+    <package name="gnome-shell"/>
+    <package name="mutter"/>
+    <package name="nautilus"/>
+    <package name="ptyxis"/>
+    <package name="weston"/>
+    <package name="xdg-desktop-portal-gnome"/>
   </packages>
 
 </image>
