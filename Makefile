@@ -55,6 +55,7 @@ image: $(IMAGE_RAW)
 dtbs: $(DTBS_TAR)
 
 $(FLASHIMAGES)/.extracted: $(IMAGE_RAW)
+	mkdir -p $(FLASHIMAGES)
 	sudo scripts/extract_flash_artifacts.sh $< $(FLASHIMAGES)
 	@touch $@
 
