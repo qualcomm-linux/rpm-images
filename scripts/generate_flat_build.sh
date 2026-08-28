@@ -192,11 +192,11 @@ add_board \
         "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00137/QCM6490_bootbinaries.zip" \
         "qcm6490_boot-binaries.zip" \
         "24315170167192c63e4969d85d4b20b2bd9311f6b2a72220af571d2ebaa51e2a" \
-        "RB3 Gen2 Industrial Kit CDT" \
-        "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-kit.zip" \
-        "qcs6490-rb3gen2-industrial-kit_cdt.zip" \
-        "6cf70a1b9eb0ff27176bb77c679d519f58fbad2cdf2fd7bec1e305c1bf52c013" \
-        "cdt_industrial_kit.bin"
+        "RB3 Gen2 Industrial Mezzanine Kit CDT (subtype13, M.2 QCC2072 BT)" \
+        "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip" \
+        "qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip" \
+        "bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6" \
+        "cdt_industrial_mezz_kit.bin"
 
 # ---- Utilities ---------------------------------------------------------------
 download_if_needed() {
