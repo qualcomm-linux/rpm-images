@@ -131,27 +131,37 @@ export MTOOLS_SKIP_CHECK=1
 
 # ---- Board registry ----------------------------------------------------------
 declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB
-declare -a BOOT_DESC BOOT_URL BOOT_FILENAME BOOT_SHA
+declare -a BOARD_BOOTS
 declare -a BOARD_CDTS
 BOARD_COUNT=0
 
 add_board() {
         local name="$1" platforms="$2" dtb="$3"
-        local boot_desc="$4" boot_url="$5" boot_filename="$6" boot_sha="$7"
-        local cdt_list="${8:-}"
+        local boot_list="$4"
+        local cdt_list="${5:-}"
 
         BOARD_NAME[BOARD_COUNT]="$name"
         BOARD_PLATFORMS[BOARD_COUNT]="$platforms"
         BOARD_DTB[BOARD_COUNT]="$dtb"
-        BOOT_DESC[BOARD_COUNT]="$boot_desc"
-        BOOT_URL[BOARD_COUNT]="$boot_url"
-        BOOT_FILENAME[BOARD_COUNT]="$boot_filename"
-        BOOT_SHA[BOARD_COUNT]="$boot_sha"
+        BOARD_BOOTS[BOARD_COUNT]="$boot_list"
         BOARD_CDTS[BOARD_COUNT]="$cdt_list"
 
         ((++BOARD_COUNT))
 }
-
+for_each_boot() {
+        local idx="$1" cb="$2"
+        local boot_list="${BOARD_BOOTS[$idx]}"
+        [[ -z "$boot_list" ]] && return 0
+        local entry
+        while IFS= read -r entry; do
+                entry="${entry#"${entry%%[![:space:]]*}"}"
+                entry="${entry%"${entry##*[![:space:]]}"}"
+                [[ -z "$entry" ]] && continue
+                local b_desc b_url b_filename b_sha
+                IFS='|' read -r b_desc b_url b_filename b_sha <<< "$entry"
+                "$cb" "$b_desc" "$b_url" "$b_filename" "$b_sha"
+        done < <(printf '%s\n' "$boot_list" | awk 'BEGIN{RS=";;"}1')
+}
 for_each_cdt() {
         local idx="$1" cb="$2"
         local cdt_list="${BOARD_CDTS[$idx]}"
@@ -170,10 +180,8 @@ for_each_cdt() {
 # ---- Populate boards --------------------------------------------------------
 add_board \
         "qcs6490-rb3gen2" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
-        "QCM6490 boot binaries" \
-        "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00137/QCM6490_bootbinaries.zip" \
-        "qcm6490_boot-binaries.zip" \
-        "24315170167192c63e4969d85d4b20b2bd9311f6b2a72220af571d2ebaa51e2a" \
+        "QCM6490 boot binaries |https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00142/QCM6490_bootbinaries_00142.zip|qcm6490_boot-binaries_00142.zip|22e45047b3349a1611d27167616dd04f08e8351120ac121f6921b47b9f709216;;
+QCM6490 boot binaries (immutable)|https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00142/QCM6490_bootbinaries_immutable_00142.zip|qcm6490_boot-binaries_immutable_00142.zip|a5f48c1646eb640377b66fa13064f2efe6f667e60f714b0e06c34dc66b7c94fb" \
         "RB3 Gen2 Vision Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip|qcs6490-rb3gen2-vision-kit_cdt.zip|a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c|cdt_vision_kit.bin|cdt.bin;;
 RB3 Gen2 Core Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip|qcs6490-rb3gen2-core-kit_cdt.zip|0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e|cdt_core_kit.bin|cdt_core_kit.bin;;
 RB3 Gen2 Industrial Mezz Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip|qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip|bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6|cdt_industrial_mezz_kit.bin|cdt_industrial_mezz_kit.bin"
@@ -591,17 +599,21 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         name="${BOARD_NAME[i]}"
 
         if grep -Fxq "$name" "$TARGETS_FILE"; then
-                download_if_needed "${BOOT_URL[i]}" "$DOWNLOADDIR/${BOOT_FILENAME[i]}"
-                if [[ -n "${BOOT_SHA[i]}" ]]; then
-                        verify_sha256 "${BOOT_SHA[i]}" "$DOWNLOADDIR/${BOOT_FILENAME[i]}"
-                else
-                        if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
-                                echo "WARNING: No SHA256 provided for ${BOOT_FILENAME[i]} (continuing due to --allow-missing-sha=true)" >&2
+                _dl_boot() {
+                        local _desc="$1" _url="$2" _filename="$3" _sha="$4"
+                        download_if_needed "$_url" "$DOWNLOADDIR/$_filename"
+                        if [[ -n "$_sha" ]]; then
+                                verify_sha256 "$_sha" "$DOWNLOADDIR/$_filename"
                         else
-                                echo "ERROR: No SHA256 provided for ${BOOT_FILENAME[i]}" >&2
-                                exit 10
+                                if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
+                                        echo "WARNING: No SHA256 provided for $_filename (continuing due to --allow-missing-sha=true)" >&2
+                                else
+                                        echo "ERROR: No SHA256 provided for $_filename" >&2
+                                        exit 10
+                                fi
                         fi
-                fi
+                }
+                for_each_boot "$i" _dl_boot
         fi
 
         _dl_cdt() {
@@ -757,6 +769,12 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             echo "  Name          : $name"
             echo "  Platforms     : $platforms"
             echo "  DTB           : $dtb"
+            echo "  Boot packages :"
+            _dbg_list_boot() {
+                    local _desc="$1" _url="$2" _filename="$3" _sha="$4"
+                    echo "    - $_desc -> $_filename"
+            }
+            for_each_boot "$i" _dbg_list_boot
         } >&2
     fi
 
@@ -773,12 +791,17 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         continue
     fi
 
-    # Unzip boot and CDT only for targeted boards
-    [[ -f "$DOWNLOADDIR/${BOOT_FILENAME[i]}" ]] || {
-        echo "ERROR: Missing boot binaries zip for $name: $DOWNLOADDIR/${BOOT_FILENAME[i]}" >&2
-        exit 14
+    # Unzip every registered boot-binaries package for this board, in order.
+    _unpack_boot() {
+        local _desc="$1" _url="$2" _filename="$3" _sha="$4"
+        local _noext="${_filename%.zip}"
+        [[ -f "$DOWNLOADDIR/$_filename" ]] || {
+                echo "ERROR: Missing boot binaries zip for $name ('$_desc'): $DOWNLOADDIR/$_filename" >&2
+                exit 14
+        }
+        unpack_zip_smart "$DOWNLOADDIR/$_filename" "${BUILD_DIR}/${name}_boot_${_noext}"
     }
-    unpack_zip_smart "$DOWNLOADDIR/${BOOT_FILENAME[i]}" "${BUILD_DIR}/${name}_boot-binaries"
+    for_each_boot "$i" _unpack_boot
 
     for platform in $platforms; do
         esp_base=""
@@ -827,8 +850,13 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             "$flash_dir"/gpt_empty*.bin \
             "$flash_dir"/partitions* \
             "$flash_dir"/disk_type 2>/dev/null || true
-
-        copy_boot_binaries_filtered "${BUILD_DIR}/${name}_boot-binaries" "$flash_dir"
+        _copy_boot() {
+                local _desc="$1" _url="$2" _filename="$3" _sha="$4"
+                local _noext="${_filename%.zip}"
+                dbg "Copying boot binaries '${_desc}' for ${name}/${platform}"
+                copy_boot_binaries_filtered "${BUILD_DIR}/${name}_boot_${_noext}" "$flash_dir"
+        }
+        for_each_boot "$i" _copy_boot
 
                 _copy_cdt() {
                         local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
