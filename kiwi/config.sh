@@ -44,3 +44,11 @@ done
 # ── Services ──────────────────────────────────────────────────────────────────
 systemctl enable sshd.service        || true
 systemctl enable NetworkManager.service || true
+
+# ── Audio module autoload ────────────────────────────────────────────────────
+# alsa-lib's /usr/lib/modprobe.d/dist-alsa.conf installs a "modprobe snd-pcm"
+# hook that intercepts every snd-pcm request during udevd coldplug, including
+# the Qualcomm audio SoC modules (snd_soc_lpass_wsa_macro, soundwire_qcom,
+# etc.), which prevents them from auto-loading on boot. Strip the install
+# hook so snd-pcm loads normally.
+sed -i '/^install snd-pcm /d' /usr/lib/modprobe.d/dist-alsa.conf
