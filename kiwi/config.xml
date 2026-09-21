@@ -84,6 +84,7 @@
     <package name="wireless-regdb"/>
     <package name="wpa_supplicant"/>
     <package name="bluez"/>
+    <package name="bluez-obexd"/>
 
     <!-- Firmware -->
     <package name="atheros-firmware"/>
