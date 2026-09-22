@@ -141,6 +141,10 @@
     <package name="fastrpc-services"/>
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
     <package name="efivar"/>
+    <package name="iris-vpu"/>
+    <package name="qcom-fastcv-binaries"/>
+    <package name="qcom-fastcv-binaries-utils"/>
+    <package name="camx-dkms"/>
   </packages>
 
   <!-- ── gnome profile packages (GNOME desktop) ─────────────────────────────── -->
