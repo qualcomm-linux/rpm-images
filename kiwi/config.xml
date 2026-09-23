@@ -45,6 +45,16 @@
     </type>
   </preferences>
 
+  <!-- Qualcomm CentOS 10 OS repositories -->
+  <!-- imageinclude=true: repository is baked into the image -->
+  <repository type="rpm-md" alias="qcom-centos10-os-aarch64" priority="1" imageinclude="true">
+    <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/aarch64/"/>
+  </repository>
+
+  <repository type="rpm-md" alias="qcom-centos10-os-noarch" priority="1" imageinclude="true">
+    <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/noarch/"/>
+  </repository>
+
   <!-- EPEL 10 - provides dracut-kiwi-oem-repart, pv, and other extras -->
   <!-- imageinclude=false: build-time only, not baked into the image    -->
   <repository type="rpm-md" alias="epel10" imageinclude="false">
@@ -132,6 +142,10 @@
     <package name="fastrpc-services"/>
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
     <package name="efivar"/>
+    <package name="iris-vpu"/>
+    <package name="qcom-fastcv-binaries"/>
+    <package name="qcom-fastcv-binaries-utils"/>
+    <package name="camx-dkms"/>
   </packages>
 
   <!-- ── gnome profile packages (GNOME desktop) ─────────────────────────────── -->
