@@ -88,27 +88,29 @@
     <!-- Networking -->
     <package name="NetworkManager"/>
     <package name="NetworkManager-wifi"/>
-    <package name="iproute"/>
-    <package name="rfkill"/>
-    <package name="chrony"/>
-    <package name="wireless-regdb"/>
-    <package name="wpa_supplicant"/>
     <package name="bluez"/>
     <package name="bluez-obexd"/>
+    <package name="chrony"/>
+    <package name="iproute"/>
+    <package name="rfkill"/>
+    <package name="wireless-regdb"/>
+    <package name="wpa_supplicant"/>
 
     <!-- Firmware -->
     <package name="atheros-firmware"/>
     <package name="linux-firmware"/>
     <package name="qcom-firmware"/>
 
-    <package name="kernel"/>
-    <package name="kernel-headers"/>
-    <package name="kernel-devel"/>
-    <package name="kmod"/>
+    <!-- Kernel and initramfs -->
     <package name="dracut"/>
     <!-- Required by kiwi for oem image type (first-boot partition resize) -->
     <package name="dracut-kiwi-oem-repart"/>
+    <package name="kernel"/>
+    <package name="kernel-devel"/>
+    <package name="kernel-headers"/>
+    <package name="kmod"/>
 
+    <!-- Base system -->
     <package name="bash"/>
     <package name="coreutils"/>
     <package name="sudo"/>
@@ -116,36 +118,47 @@
     <package name="vim-minimal"/>
     <package name="wget"/>
 
+    <!-- Disk and filesystem tools -->
     <package name="dosfstools"/>
     <package name="e2fsprogs"/>
     <package name="gdisk"/>
     <!-- pv (pipe viewer) - required by dracut-kiwi-lib; from EPEL 10 -->
     <package name="pv"/>
 
+    <!-- SSH -->
     <package name="openssh-clients"/>
     <package name="openssh-server"/>
 
+    <!-- Hardware utilities -->
+    <package name="efivar"/>
     <package name="fwupd"/>
     <package name="pciutils"/>
     <package name="usbutils"/>
     <package name="v4l-utils"/>
 
-    <package name="pipewire"/>
-    <package name="wireplumber"/>
-    <package name="pipewire-pulseaudio"/>
+    <!-- Audio -->
     <package name="alsa-utils"/>
+    <package name="pipewire"/>
+    <package name="pipewire-pulseaudio"/>
+    <package name="wireplumber"/>
 
+    <!-- Camera -->
     <package name="libcamera-tools"/>
     <package name="libcamera-v4l2"/>
-    <package name="epel-release"/>
+
+    <!-- DSP / compute -->
     <package name="fastrpc"/>
     <package name="fastrpc-services"/>
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
-    <package name="efivar"/>
+
+    <!-- Qualcomm repository -->
+    <package name="camx-dkms"/>
     <package name="iris-vpu"/>
     <package name="qcom-fastcv-binaries"/>
     <package name="qcom-fastcv-binaries-utils"/>
-    <package name="camx-dkms"/>
+
+    <!-- Repositories -->
+    <package name="epel-release"/>
   </packages>
 
   <!-- ── gnome profile packages (GNOME desktop) ─────────────────────────────── -->
