@@ -152,8 +152,14 @@
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
 
     <!-- Qualcomm repository -->
+    <package name="adreno-egl1"/>
+    <package name="adreno-gles2"/>
+    <package name="adreno-opencl-icd"/>
+    <package name="adreno-vulkan-icd"/>
     <package name="camx-dkms"/>
+    <package name="gbm-msm-backend"/>
     <package name="iris-vpu"/>
+    <package name="kgsl-dkms"/>
     <package name="qcom-fastcv-binaries"/>
     <package name="qcom-fastcv-binaries-utils"/>
 
