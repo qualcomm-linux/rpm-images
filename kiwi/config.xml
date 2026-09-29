@@ -148,6 +148,7 @@
 
     <!-- DSP / compute -->
     <package name="fastrpc"/>
+    <package name="fastrpc-devel"/>
     <package name="fastrpc-services"/>
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
 
