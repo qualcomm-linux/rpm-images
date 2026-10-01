@@ -1,0 +1,14 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
+[Unit]
+Description=Create ext4 filesystem on persist partition if missing
+DefaultDependencies=no
+ConditionPathExists=/dev/disk/by-partlabel/persist
+Before=var-lib-tee.mount
+ConditionPathIsMountPoint=!/var/lib/tee
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/check-tee-partition-fs.sh
+RemainAfterExit=yes

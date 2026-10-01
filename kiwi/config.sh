@@ -37,9 +37,19 @@ chmod 440 /etc/sudoers.d/90-qcom
 # created at clone time using the operator's umask: a restrictive umask (e.g.
 # 027) yields these as drwxr-x---, breaking directory traversal for unprivileged
 # daemons.
-for d in /usr /usr/lib /usr/lib/repart.d; do
+for d in \
+    /usr \
+    /usr/lib \
+    /usr/lib/repart.d \
+    /usr/lib/systemd \
+    /usr/lib/systemd/system \
+    /usr/lib/udev \
+    /usr/lib/udev/rules.d \
+    /usr/sbin; do
     [ -d "$d" ] && chmod 0755 "$d"
 done
+
+[ -f /usr/sbin/check-tee-partition-fs.sh ] && chmod 0755 /usr/sbin/check-tee-partition-fs.sh
 
 # ── Services ──────────────────────────────────────────────────────────────────
 systemctl enable sshd.service        || true

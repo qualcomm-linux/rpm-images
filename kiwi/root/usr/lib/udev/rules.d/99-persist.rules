@@ -1,0 +1,1 @@
+SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{PARTNAME}=="persist", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}+="var-lib-tee.mount"
