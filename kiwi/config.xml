@@ -47,11 +47,11 @@
 
   <!-- Qualcomm CentOS 10 OS repositories -->
   <!-- imageinclude=true: repository is baked into the image -->
-  <repository type="rpm-md" alias="qcom-centos10-os-aarch64" priority="1" imageinclude="true">
+  <repository type="rpm-md" alias="qcom-centos10-os-aarch64" priority="1" imageinclude="true"  repository_gpgcheck="true">
     <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/aarch64/"/>
   </repository>
 
-  <repository type="rpm-md" alias="qcom-centos10-os-noarch" priority="1" imageinclude="true">
+  <repository type="rpm-md" alias="qcom-centos10-os-noarch" priority="1" imageinclude="true"  repository_gpgcheck="true">
     <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/noarch/"/>
   </repository>
 
