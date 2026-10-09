@@ -152,7 +152,6 @@
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
 
     <!-- Qualcomm repository -->
-    <package name="camx-dkms"/>
     <package name="iris-vpu"/>
     <package name="qcom-fastcv-binaries"/>
     <package name="qcom-fastcv-binaries-utils"/>
@@ -164,6 +163,12 @@
   <!-- ── gnome profile packages (GNOME desktop) ─────────────────────────────── -->
   <packages type="image" profiles="gnome">
     <namedCollection name="GNOME"/>
+
+    <!-- Camera -->
+    <package name="camx-dkms"/>
+    <package name="camx-firmware-kodiak"/>
+    <package name="camx-kodiak"/>
+    <package name="libcamx-kodiak1"/>
   </packages>
 
 </image>
