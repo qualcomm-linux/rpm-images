@@ -72,6 +72,12 @@
     <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/noarch/"/>
   </repository>
 
+  <!-- CodeLinaro qli-rpm: self-built bluez (and other qli-rpm team packages), -->
+  <!-- published without GPG signing, priority 1 so it wins over CentOS's bluez. -->
+  <repository type="rpm-md" alias="codelinaro-qli-rpm-aarch64" priority="1" imageinclude="true">
+    <source path="https://artifacts.codelinaro.org/artifactory/qli-rpm/centos/10/os/aarch64/"/>
+  </repository>
+
   <!-- EPEL 10 - provides dracut-kiwi-oem-repart, pv, and other extras -->
   <!-- imageinclude=false: build-time only, not baked into the image    -->
   <repository type="rpm-md" alias="epel10" imageinclude="false">
