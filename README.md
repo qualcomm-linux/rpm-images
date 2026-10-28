@@ -69,7 +69,7 @@ package list, image type, bootloader) and
 [`kiwi/config.sh`](kiwi/config.sh), producing a full GPT disk image:
 
 ```
-build/output/image.raw
+build/output/console/image.raw
 ```
 
 To build the GNOME desktop variant instead of the headless console image:
@@ -80,13 +80,24 @@ make image KIWI_PROFILE=gnome
 
 To build a performance variant, which quiets the serial console
 (`quiet systemd.tty.term.console=dumb`) to avoid the boot-time and CPU cost
-of synchronous output over the slow UART console, use the combined
-`console-performance` or `gnome-performance` profile:
+of synchronous output over the slow UART console, set `PERF_BUILD=1`.
+This selects the base `console` or `gnome` content profile plus the `perf`
+KIWI image-type profile. The standard and perf kernel command lines are defined in
+[`kiwi/config.xml`](kiwi/config.xml), not in the Makefile:
 
 ```bash
-make image KIWI_PROFILE=console-performance
-make image KIWI_PROFILE=gnome-performance
+make image PERF_BUILD=1
+make image KIWI_PROFILE=gnome PERF_BUILD=1
 ```
+
+If perf builds later need extra packages, add them to
+[`kiwi/config.xml`](kiwi/config.xml) under a `packages` block with
+`profiles="perf"`.
+
+Internally the Makefile selects two KIWI profiles: one content profile
+(`console` or `gnome`) and one image-type profile (`standard` or `perf`).
+All variants use `KIWI_SHARED_CACHE` so KIWI/DNF repository metadata and
+package cache can be reused between image builds.
 
 #### Adding extra firmware
 
@@ -100,16 +111,22 @@ make flash-artifacts
 ```
 
 Extracts the EFI System Partition and root filesystem from `image.raw` into
-`build/output/flashimages/` (`efi.bin`, `rootfs.img`, `dtbs.tar.gz`).
+`build/output/<profile>/flashimages/` (`efi.bin`, `rootfs.img`, `dtbs.tar.gz`).
 
 ### Build board-specific flash packages
 
 ```bash
-# All supported boards (default)
+# Default board
 make flash
 
 # A specific board
 make flash TARGET_BOARDS=qcs6490-rb3gen2
+
+# All supported boards
+make flash TARGET_BOARDS=all
+
+# Perf image
+make flash PERF_BUILD=1
 ```
 
 `scripts/generate_flat_build.sh` downloads Qualcomm boot binaries and CDT
@@ -118,7 +135,7 @@ complete per-board flash directory ready for QDL. Flash outputs are
 named with the active `KIWI_PROFILE`:
 
 ```
-build/out/console-performance-flash_qcs6490-rb3gen2_ufs/
+build/out/console-flash_qcs6490-rb3gen2_ufs/
 ├── prog_firehose_ddr_*.elf   # Firehose programmer
 ├── rawprogram*.xml           # Flash programming script
 ├── patch*.xml                # Patch script
@@ -157,11 +174,13 @@ different kit, swap in the matching CDT file (e.g. `cdt_core_kit.bin`) for
 | Variable | Default | Description |
 |---|---|---|
 | `ARCH` | `aarch64` | Target architecture passed to kiwi-ng |
-| `KIWI_PROFILE` | `console` | Image profile: `console` (headless), `gnome` (desktop), `console-performance` (headless with quiet serial console), or `gnome-performance` (desktop with quiet serial console) |
+| `KIWI_PROFILE` | `console` | Image profile: `console` (headless) or `gnome` (desktop) |
+| `PERF_BUILD` | `0` | `1` appends quiet serial-console kernel arguments |
 | `TARGET_BOARDS` | `qcs6490-rb3gen2` | Comma-separated boards (or `all`) for `make flash` |
 | `USE_FIT_IMAGE` | `1` | `1` = FIT multi-DTB image (recommended); `0` = single-DTB VFAT |
-| `BUILD_OUTPUT` | `build/output` | kiwi image build/output directory |
+| `BUILD_OUTPUT` | `build/output` | Base directory for per-variant kiwi outputs |
 | `ARTIFACTDIR` | `build/out` | Flash package output directory |
+| `KIWI_SHARED_CACHE` | `build/kiwi-cache` | Shared KIWI package/cache directory reused across image variants |
 | `EXTRA_FLASH_OPTS` | _unset_ | Extra flags forwarded to `generate_flat_build.sh` |
 | `EXTRA_KIWI_OPTS` | _unset_ | Extra flags forwarded to `kiwi-ng` |
 | `KIWI_PACKAGES_DIR` | `packages` | Directory for custom kernel RPMs |

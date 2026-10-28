@@ -110,13 +110,9 @@ jobs:
 
 
   build-and-flash:
-    name: Phase 2 - Image, extract & flash packages (${{ matrix.profile }})
+    name: Phase 2 - Images, extract & flash packages
     needs: [kernel-rpm]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [console, console-performance, gnome, gnome-performance]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -159,15 +155,29 @@ jobs:
       - name: Build image, extract, and assemble flash packages
         run: |
           set -euo pipefail
-          profile="${{ matrix.profile }}"
 
-          sudo HOME=/tmp make flash \
-            KIWI_PROFILE="${profile}" \
-            BUILD_OUTPUT="build/output/${profile}" \
-            ARTIFACTDIR="build/out" \
-            TARGET_BOARDS=qcs6490-rb3gen2 \
-            USE_FIT_IMAGE=1 \
-            EXTRA_FLASH_OPTS=--verbose=true
+          build_variant() {
+            local variant="$1"
+            local kiwi_profile="$2"
+            local perf_build="$3"
+
+            echo "::group::Build ${variant}"
+            sudo HOME=/tmp make flash \
+              KIWI_PROFILE="${kiwi_profile}" \
+              PERF_BUILD="${perf_build}" \
+              BUILD_OUTPUT="build/output" \
+              KIWI_SHARED_CACHE="build/kiwi-cache" \
+              ARTIFACTDIR="build/out" \
+              TARGET_BOARDS=qcs6490-rb3gen2 \
+              USE_FIT_IMAGE=1 \
+              EXTRA_FLASH_OPTS=--verbose=true
+            echo "::endgroup::"
+          }
+
+          build_variant console console 0
+          build_variant console-perf console 1
+          build_variant gnome gnome 0
+          build_variant gnome-perf gnome 1
 
           sudo chown -R "$(id -u):$(id -g)" build
           if [ -e downloads ]; then
@@ -188,30 +198,41 @@ jobs:
       - name: Generate SBOM with Syft
         run: |
           set -euo pipefail
-          profile="${{ matrix.profile }}"
-          mount_dir="rootfs-mount-${profile}"
-          mkdir -p "${mount_dir}"
-          cleanup() {
-            if mountpoint -q "${mount_dir}"; then
-              sudo umount "${mount_dir}"
-            fi
+
+          scan_variant() {
+            local variant="$1"
+            local mount_dir="rootfs-mount-${variant}"
+
+            echo "::group::SBOM ${variant}"
+            mkdir -p "${mount_dir}"
+            cleanup() {
+              if mountpoint -q "${mount_dir}"; then
+                sudo umount "${mount_dir}"
+              fi
+            }
+            trap cleanup EXIT
+            sudo mount -o ro "build/output/${variant}/flashimages/rootfs.img" "${mount_dir}"
+            SYFT_FORMAT_PRETTY=true bin/syft \
+                -o "cyclonedx-json=rootfs-sbom-${variant}.cyclonedx.json" \
+                -o "spdx-json=rootfs-sbom-${variant}.spdx.json" \
+                -o "syft-json=rootfs-sbom-${variant}.syft.json" \
+                -o "syft-text=rootfs-sbom-${variant}.syft.txt" \
+                -o syft-table \
+                --parallelism "$(nproc)" \
+                --select-catalogers rpm \
+                --source-name "qualcomm-linux-rpm-${variant}-rootfs" \
+                --source-version "${BUILD_ID}" \
+                -v \
+                scan "${mount_dir}"
+            cleanup
+            trap - EXIT
+            echo "::endgroup::"
           }
-          trap cleanup EXIT
-          sudo mount -o ro "build/output/${profile}/flashimages/rootfs.img" "${mount_dir}"
-          SYFT_FORMAT_PRETTY=true bin/syft \
-              -o "cyclonedx-json=rootfs-sbom-${profile}.cyclonedx.json" \
-              -o "spdx-json=rootfs-sbom-${profile}.spdx.json" \
-              -o "syft-json=rootfs-sbom-${profile}.syft.json" \
-              -o "syft-text=rootfs-sbom-${profile}.syft.txt" \
-              -o syft-table \
-              --parallelism "$(nproc)" \
-              --select-catalogers rpm \
-              --source-name "qualcomm-linux-rpm-${profile}-rootfs" \
-              --source-version "${BUILD_ID}" \
-              -v \
-              scan "${mount_dir}"
-          cleanup
-          trap - EXIT
+
+          scan_variant console
+          scan_variant console-perf
+          scan_variant gnome
+          scan_variant gnome-perf
 
       - name: Stage flash packages for publishing
         run: |
@@ -230,7 +251,7 @@ jobs:
       - name: Upload flash package artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: rpm-artifacts-${{ matrix.profile }}
+          name: rpm-artifacts-all
           if-no-files-found: error
           path: rpm-artifacts
           retention-days: 1
@@ -238,10 +259,9 @@ jobs:
       - name: Stage SBOMs for publishing
         run: |
           set -euo pipefail
-          profile="${{ matrix.profile }}"
           mkdir -p sboms
           shopt -s nullglob
-          for f in rootfs-sbom-${profile}.*; do
+          for f in rootfs-sbom-*.*; do
             gzip -c "$f" > "sboms/${f}.gz"
           done
           shopt -u nullglob
@@ -250,7 +270,7 @@ jobs:
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: sboms-${{ matrix.profile }}
+          name: sboms-all
           if-no-files-found: error
           path: sboms
           retention-days: 1

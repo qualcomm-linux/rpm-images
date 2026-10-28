@@ -15,8 +15,8 @@
   <profiles>
     <profile name="console" description="Headless console image"/>
     <profile name="gnome"   description="GNOME desktop image (includes console)"/>
-    <profile name="console-performance" description="Headless console image with quiet serial console"/>
-    <profile name="gnome-performance" description="GNOME desktop image with quiet serial console"/>
+    <profile name="standard" description="Standard boot configuration"/>
+    <profile name="perf"    description="Performance build additions"/>
   </profiles>
 
   <preferences>
@@ -24,8 +24,28 @@
     <packagemanager>dnf4</packagemanager>
   </preferences>
 
-  <!-- Keep both profile preference blocks in sync; only kernelcmdline differs. -->
-  <preferences profiles="console,gnome">
+  <!--
+    PERF_BUILD=1 selects this type profile together with console or gnome.
+    Keep this type block in sync with the standard type below; kernelcmdline
+    is the intentional difference.
+  -->
+  <preferences profiles="perf">
+    <type image="oem"
+          filesystem="ext4"
+          firmware="efi"
+          efipartsize="512"
+          target_blocksize="4096"
+          fsmountoptions="defaults,x-systemd.growfs"
+          kernelcmdline="clk_ignore_unused pd_ignore_unused audit=0 root=PARTLABEL=rootfs rootwait rw deferred_probe_timeout=60 console=ttyMSM0,115200 qcom_scm.download_mode=1 quiet systemd.tty.term.console=dumb">
+      <bootloader name="grub2" timeout="5"/>
+      <oemconfig>
+        <oem-resize>true</oem-resize>
+        <oem-swap>false</oem-swap>
+      </oemconfig>
+    </type>
+  </preferences>
+
+  <preferences profiles="standard">
     <!-- efipartsize : ESP size in MiB                                  -->
     <type image="oem"
           filesystem="ext4"
@@ -37,23 +57,6 @@
       <bootloader name="grub2" timeout="5"/>
       <oemconfig>
         <!-- Automatically grow the root partition to fill the disk on first boot -->
-        <oem-resize>true</oem-resize>
-        <oem-swap>false</oem-swap>
-      </oemconfig>
-    </type>
-  </preferences>
-
-  <!-- Same settings as console,gnome with quiet serial console options appended. -->
-  <preferences profiles="console-performance,gnome-performance">
-    <type image="oem"
-          filesystem="ext4"
-          firmware="efi"
-          efipartsize="512"
-          target_blocksize="4096"
-          fsmountoptions="defaults,x-systemd.growfs"
-          kernelcmdline="clk_ignore_unused pd_ignore_unused audit=0 root=PARTLABEL=rootfs rootwait rw deferred_probe_timeout=60 console=ttyMSM0,115200 qcom_scm.download_mode=1 quiet systemd.tty.term.console=dumb">
-      <bootloader name="grub2" timeout="5"/>
-      <oemconfig>
         <oem-resize>true</oem-resize>
         <oem-swap>false</oem-swap>
       </oemconfig>
@@ -101,7 +104,7 @@
   </packages>
 
   <!-- Image packages -->
-  <packages type="image" profiles="console,gnome,console-performance,gnome-performance">
+  <packages type="image" profiles="console,gnome">
     <!-- Networking -->
     <package name="NetworkManager"/>
     <package name="NetworkManager-wifi"/>
@@ -172,7 +175,7 @@
     <package name="epel-release"/>
   </packages>
 
-  <packages type="image" profiles="gnome,gnome-performance">
+  <packages type="image" profiles="gnome">
     <namedCollection name="GNOME"/>
 
     <!-- Audio -->
@@ -192,5 +195,14 @@
     <package name="qcom-fastcv-binaries-utils"/>
 
   </packages>
+
+  <!--
+    PERF_BUILD=1 selects the "perf" image-type profile together with the
+    console/gnome content profile. Add perf-only packages here when needed:
+
+    <packages type="image" profiles="perf">
+      <package name="example-package"/>
+    </packages>
+  -->
 
 </image>
