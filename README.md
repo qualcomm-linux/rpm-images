@@ -32,7 +32,7 @@ sudo apt install python3 python3-pip pipx git curl unzip dosfstools mtools rpm c
 ## Repositories
 
 Images pull Qualcomm-specific packages (firmware, camera, DSP, GPU) from the
-[Qualcomm RPM overlay repository](https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/),
+[Qualcomm RPM overlay repository](https://softwarecenter.qualcomm.com/nexus/rpm/centos10/os/),
 alongside CentOS Stream 10 (BaseOS, AppStream, CRB) and EPEL 10 for the rest
 of the OS. All repositories are declared in [`kiwi/config.xml`](kiwi/config.xml).
 
