@@ -64,12 +64,12 @@
   <!-- imageinclude=true: repository is baked into the image -->
   <repository type="rpm-md" alias="qcom-centos10-os-aarch64" priority="1" imageinclude="true"
               repository_gpgcheck="true" customize="config-repo-signing.sh">
-    <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/aarch64/"/>
+    <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos10/os/aarch64/"/>
   </repository>
 
   <repository type="rpm-md" alias="qcom-centos10-os-noarch" priority="1" imageinclude="true"
                repository_gpgcheck="true" customize="config-repo-signing.sh">
-    <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/noarch/"/>
+    <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos10/os/noarch/"/>
   </repository>
 
   <!-- EPEL 10 - provides dracut-kiwi-oem-repart, pv, and other extras -->
