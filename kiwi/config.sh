@@ -62,3 +62,6 @@ systemctl enable NetworkManager.service || true
 # etc.), which prevents them from auto-loading on boot. Strip the install
 # hook so snd-pcm loads normally.
 sed -i '/^install snd-pcm /d' /usr/lib/modprobe.d/dist-alsa.conf
+
+# Update GNOME system settings
+dconf update
