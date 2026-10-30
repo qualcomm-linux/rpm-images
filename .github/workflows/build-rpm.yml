@@ -45,7 +45,7 @@ jobs:
       - name: Build kernel RPMs
         uses: ./.github/actions/build-kernel-rpm
         with:
-          kernel-ref: qcom-6.18.y-20260911
+          kernel-ref: qcom-6.18.y-20261016
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
