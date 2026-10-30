@@ -62,3 +62,11 @@ systemctl enable NetworkManager.service || true
 # etc.), which prevents them from auto-loading on boot. Strip the install
 # hook so snd-pcm loads normally.
 sed -i '/^install snd-pcm /d' /usr/lib/modprobe.d/dist-alsa.conf
+
+# Compile the dconf database so the GNOME power settings added under
+# /etc/dconf/db/local.d/ are applied in the generated image.
+if command -v dconf >/dev/null 2>&1; then
+    dconf update || { echo "ERROR: dconf update failed" >&2; exit 1; }
+else
+    echo "WARNING: dconf not found; skipping power settings database update" >&2
+fi
