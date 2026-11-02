@@ -1,0 +1,229 @@
+From 380239d498d8b570b6054fd53b7f0a11bd8c5518 Mon Sep 17 00:00:00 2001
+From: Julius Bairaktaris <julius@bairaktaris.de>
+Date: Mon, 27 Jul 2026 00:19:07 +0200
+Subject: [PATCH 1/3] UPSTREAM: wifi: ath11k: implement CE interrupt
+ enable/disable for AHB
+
+ath11k_core_reset() calls ath11k_hif_ce_irq_disable() right before it
+powers the target down, but ath11k_ahb_hif_ops_ipq8074 never set the
+ce_irq_enable/ce_irq_disable pair, and ath11k_hif_ce_irq_disable() does
+nothing when the op is NULL. On AHB the copy engine interrupts and their
+tasklets therefore stay live across rproc_shutdown(), where the register
+space they touch is no longer accessible.
+
+Wire the ops up. The sequence is the one ath11k_ahb_stop() already runs,
+factored into a helper and reused, so behaviour on the stop path is
+unchanged. wcn6750 is not affected: it uses the pcic ops, which
+implement the pair already.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
+Reviewed-by: Rameshkumar Sundaram <rameshkumar.sundaram@oss.qualcomm.com>
+Reviewed-by: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
+Link: https://patch.msgid.link/20260726221908.104873-2-julius@bairaktaris.de
+Signed-off-by: Jeff Johnson <jeff.johnson@oss.qualcomm.com>
+Signed-off-by: Miaoqing Pan <miaoqing.pan@oss.qualcomm.com>
+---
+ drivers/net/wireless/ath/ath11k/ahb.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/ath/ath11k/ahb.c b/drivers/net/wireless/ath/ath11k/ahb.c
+index bb3bb7ace2bb5..f08c414440942 100644
+--- a/drivers/net/wireless/ath/ath11k/ahb.c
++++ b/drivers/net/wireless/ath/ath11k/ahb.c
+@@ -391,12 +391,17 @@ static void ath11k_ahb_ext_irq_disable(struct ath11k_base *ab)
+ 	ath11k_ahb_sync_ext_irqs(ab);
+ }
+ 
+-static void ath11k_ahb_stop(struct ath11k_base *ab)
++static void ath11k_ahb_ce_irq_disable_sync(struct ath11k_base *ab)
+ {
+ 	if (!test_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags))
+ 		ath11k_ahb_ce_irqs_disable(ab);
+ 	ath11k_ahb_sync_ce_irqs(ab);
+ 	ath11k_ahb_kill_tasklets(ab);
++}
++
++static void ath11k_ahb_stop(struct ath11k_base *ab)
++{
++	ath11k_ahb_ce_irq_disable_sync(ab);
+ 	timer_delete_sync(&ab->rx_replenish_retry);
+ 	ath11k_ce_cleanup_pipes(ab);
+ }
+@@ -773,6 +778,8 @@ static const struct ath11k_hif_ops ath11k_ahb_hif_ops_ipq8074 = {
+ 	.map_service_to_pipe = ath11k_ahb_map_service_to_pipe,
+ 	.power_down = ath11k_ahb_power_down,
+ 	.power_up = ath11k_ahb_power_up,
++	.ce_irq_enable = ath11k_ahb_ce_irqs_enable,
++	.ce_irq_disable = ath11k_ahb_ce_irq_disable_sync,
+ };
+ 
+ static const struct ath11k_hif_ops ath11k_ahb_hif_ops_wcn6750 = {
+
+From d56436ca4ac614cdd74eba8c4a1a1e14aeda4572 Mon Sep 17 00:00:00 2001
+From: Julius Bairaktaris <julius@bairaktaris.de>
+Date: Mon, 27 Jul 2026 00:19:08 +0200
+Subject: [PATCH 2/3] UPSTREAM: wifi: ath11k: disable interrupts during
+ firmware crash recovery
+
+On IPQ8074 a firmware assert reboots the SoC:
+
+  Unable to handle kernel read from unreadable memory at virtual address 0
+  pc : ath11k_hal_srng_access_begin+0xc/0x60 [ath11k]
+  lr : ath11k_dp_rx_process_mon_status+0x15c/0xd84 [ath11k]
+  Call trace:
+   ath11k_hal_srng_access_begin+0xc/0x60 [ath11k]
+   ath11k_dp_rx_process_mon_rings+0xa0/0x5d4 [ath11k]
+   ath11k_dp_service_srng+0x1f4/0x348 [ath11k]
+   ath11k_ahb_ext_grp_napi_poll+0x34/0xd4 [ath11k_ahb]
+   __napi_poll+0x38/0x188
+   net_rx_action+0x120/0x2c0
+
+ath11k_core_reconfigure_on_crash() tears the data path down with
+ath11k_dp_pdev_free(), ath11k_dp_free() and ath11k_hal_srng_clear(),
+which memsets the ring list. The DP NAPI is still running while that
+happens, so it services a ring whose address pointer has just been
+cleared.
+
+That function used to disable the interrupts first, until
+commit d455e805de70 ("wifi: ath11k: rearrange IRQ enable/disable in reset path")
+moved the disable into ath11k_core_reset(). reset_work is only queued
+from mhi.c and from the debugfs hw-restart handler, so AHB parts never
+run it on a real firmware crash. Their recovery goes QMI server exit ->
+restart_work -> ath11k_core_reconfigure_on_crash() ->
+ath11k_core_qmi_firmware_ready(), and nothing disables the interrupts
+anywhere along it.
+
+Disable them again on the crash path. The reset path has already done
+so by the time it gets here, hence the ab->is_reset check.
+
+This is also why the debugfs hw-restart trigger never showed the
+problem: it goes through ath11k_core_reset(), the one path that still
+had the disable.
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.12-01460-QCAHKSWPL_SILICONZ-1
+
+Fixes: d455e805de70 ("wifi: ath11k: rearrange IRQ enable/disable in reset path")
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
+Reviewed-by: Rameshkumar Sundaram <rameshkumar.sundaram@oss.qualcomm.com>
+Reviewed-by: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
+Link: https://patch.msgid.link/20260726221908.104873-3-julius@bairaktaris.de
+Signed-off-by: Jeff Johnson <jeff.johnson@oss.qualcomm.com>
+Signed-off-by: Miaoqing Pan <miaoqing.pan@oss.qualcomm.com>
+---
+ drivers/net/wireless/ath/ath11k/core.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/net/wireless/ath/ath11k/core.c b/drivers/net/wireless/ath/ath11k/core.c
+index 7a9e0841d84f2..45b93464c65d0 100644
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -2344,6 +2344,16 @@ static int ath11k_core_reconfigure_on_crash(struct ath11k_base *ab)
+ 
+ 	mutex_lock(&ab->core_lock);
+ 	ath11k_thermal_unregister(ab);
++
++	/*
++	 * ath11k_core_reset() already disabled the interrupts on the reset
++	 * path; only the firmware crash path reaches here with them live.
++	 */
++	if (!ab->is_reset) {
++		ath11k_hif_irq_disable(ab);
++		ath11k_hif_ce_irq_disable(ab);
++	}
++
+ 	ath11k_dp_pdev_free(ab);
+ 	ath11k_cfr_deinit(ab);
+ 	ath11k_spectral_deinit(ab);
+
+From 6a6c1b58b20ce02f01aaacb24e3e722df053e1a7 Mon Sep 17 00:00:00 2001
+From: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
+Date: Mon, 28 Sep 2026 18:45:25 +0800
+Subject: [PATCH 3/3] UPSTREAM: wifi: ath11k: fix unbalanced IRQ enable/disable
+ during suspend/resume
+
+Commit f7a74e131d3f ("wifi: ath11k: disable interrupts during firmware
+crash recovery") added an unconditional ath11k_hif_irq_disable()/
+ath11k_hif_ce_irq_disable() pair inside
+ath11k_core_reconfigure_on_crash(), guarded by "if (!ab->is_reset)", to
+stop the DP NAPI from touching rings that have just been torn down. That
+fixes AHB device recovery, but breaks PCI device suspend/resume. During
+suspend, IRQs are disabled once in ath11k_core_suspend_late(). Then during
+resume, ath11k_core_reconfigure_on_crash() sees ab->is_reset clear and
+disables them a second time. Those IRQs are enabled only once during
+the following reinitialization, leaving the IRQ lines masked. As a result,
+HTC control responses never arrive, and resume fails:
+
+  failed to receive control response completion, polling..
+  failed to connect to HTT: -110
+  failed to reconfigure driver on crash recovery
+  failed to resume core: -110
+
+Fix this by disabling the IRQs unconditionally at the top of
+ath11k_core_reconfigure_on_crash(), and instead drop the disable
+calls from the two places that already disable IRQs before this
+function can run: ath11k_core_suspend_late() and ath11k_core_reset().
+This keeps a single disable per recovery/suspend cycle regardless of
+which path (recovery or suspend) triggers it, so the refcount on
+PCI parts stays balanced while AHB parts keep getting the disable
+that the original commit needed.
+
+Fixes: f7a74e131d3f ("wifi: ath11k: disable interrupts during firmware crash recovery")
+Reported-by: Marek Szyprowski <m.szyprowski@samsung.com>
+Closes: https://lore.kernel.org/linux-wireless/a068a857-a549-4cc2-ae0f-3ef119d3a859@samsung.com/
+Tested-by: Marek Szyprowski <m.szyprowski@samsung.com>
+Tested-by: Julius Bairaktaris <julius@bairaktaris.de>
+Signed-off-by: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
+Reviewed-by: Rameshkumar Sundaram <rameshkumar.sundaram@oss.qualcomm.com>
+Link: https://patch.msgid.link/20260928-ath11k-unbalanced-irq-enable-disable-v1-1-75166f534763@oss.qualcomm.com
+Signed-off-by: Jeff Johnson <jeff.johnson@oss.qualcomm.com>
+Signed-off-by: Miaoqing Pan <miaoqing.pan@oss.qualcomm.com>
+---
+ drivers/net/wireless/ath/ath11k/core.c | 18 ++----------------
+ 1 file changed, 2 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/net/wireless/ath/ath11k/core.c b/drivers/net/wireless/ath/ath11k/core.c
+index 45b93464c65d0..f6ba8712d33dc 100644
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -1285,9 +1285,6 @@ int ath11k_core_suspend_late(struct ath11k_base *ab)
+ 	if (ab->actual_pm_policy == ATH11K_PM_WOW)
+ 		return 0;
+ 
+-	ath11k_hif_irq_disable(ab);
+-	ath11k_hif_ce_irq_disable(ab);
+-
+ 	ath11k_hif_power_down(ab, true);
+ 
+ 	return 0;
+@@ -2343,17 +2340,9 @@ static int ath11k_core_reconfigure_on_crash(struct ath11k_base *ab)
+ 	int ret;
+ 
+ 	mutex_lock(&ab->core_lock);
++	ath11k_hif_irq_disable(ab);
++	ath11k_hif_ce_irq_disable(ab);
+ 	ath11k_thermal_unregister(ab);
+-
+-	/*
+-	 * ath11k_core_reset() already disabled the interrupts on the reset
+-	 * path; only the firmware crash path reaches here with them live.
+-	 */
+-	if (!ab->is_reset) {
+-		ath11k_hif_irq_disable(ab);
+-		ath11k_hif_ce_irq_disable(ab);
+-	}
+-
+ 	ath11k_dp_pdev_free(ab);
+ 	ath11k_cfr_deinit(ab);
+ 	ath11k_spectral_deinit(ab);
+@@ -2615,9 +2604,6 @@ static void ath11k_core_reset(struct work_struct *work)
+ 	time_left = wait_for_completion_timeout(&ab->recovery_start,
+ 						ATH11K_RECOVER_START_TIMEOUT_HZ);
+ 
+-	ath11k_hif_irq_disable(ab);
+-	ath11k_hif_ce_irq_disable(ab);
+-
+ 	ath11k_hif_power_down(ab, false);
+ 	ath11k_hif_power_up(ab);
+ 
