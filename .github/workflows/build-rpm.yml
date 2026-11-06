@@ -179,6 +179,7 @@ jobs:
               ARTIFACTDIR="build/out" \
               TARGET_BOARDS=qcs6490-rb3gen2 \
               USE_FIT_IMAGE=1 \
+              KVM_CONFIG=1 \
               EXTRA_FLASH_OPTS=--verbose=true
             echo "::endgroup::"
           }
