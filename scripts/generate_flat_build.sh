@@ -8,6 +8,7 @@ TARGET_BOARDS="${TARGET_BOARDS:-all}"
 
 # Image type: FIT multi-DTB (true) or single-DTB (false)
 USE_FIT_IMAGE="${USE_FIT_IMAGE:-true}"
+KVM_CONFIG="${KVM_CONFIG:-true}"
 
 # Verbosity and safety
 VERBOSE="${VERBOSE:-false}"
@@ -55,6 +56,9 @@ DTB handling:
                                              (falls back to single-DTB on failure)
                                      false = single-DTB mode: extract per-board DTB from dtbs.tar.gz
                                              and pack into a VFAT image
+  --kvm-config=(true|false)         default: true
+                                     true  = use xbl_config_kvm.elf as xbl_config.elf
+                                             in the same flash package
   QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit (default: $QCOM_DTB_METADATA_COMMIT)
 Kernel artifact:
   VMLINUX_SRC=<path/to/vmlinux>    optional; use a known-good kernel ELF instead of rootfs extraction
@@ -77,6 +81,7 @@ for arg in "$@"; do
                 --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
                 --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
                 --use-fit-image=*)      USE_FIT_IMAGE="${arg#*=}";;
+                --kvm-config=*)         KVM_CONFIG="${arg#*=}";;
                 --verbose=*)            VERBOSE="${arg#*=}";;
                 --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
                 -h|--help) usage; exit 0;;
@@ -86,7 +91,7 @@ done
 
 # ---- Helpers: deps & utils ---------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
-need curl; need git; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3
+need curl; need git; need unzip; need sha256sum; need tar; need dtc; need mkimage; need mkfs.vfat; need mcopy; need python3
 
 normalize_bool() {
         local v
@@ -109,7 +114,7 @@ dbg() {
 }
 
 # Normalize boolean flags
-for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE; do
+for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE KVM_CONFIG; do
         val=$(normalize_bool "${!_b}")
         if [[ "$val" == "INVALID" ]]; then
                 echo "Invalid boolean for $_b: ${!_b}. Use true/false (or 1/0/yes/no)." >&2
@@ -123,7 +128,9 @@ mkdir -p "$ROOTDIR" "$ARTIFACTDIR" "$DOWNLOADDIR"
 BUILD_DIR="${ROOTDIR}/build.$$"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 cleanup() {
-        [[ -d "$ROOTDIR" && "$ROOTDIR" == "$PWD"/work ]] && rm -rf "$ROOTDIR"
+        if [[ -d "$ROOTDIR" && "$ROOTDIR" == "$PWD"/work ]]; then
+                rm -rf "$ROOTDIR"
+        fi
 }
 trap cleanup EXIT
 
@@ -131,7 +138,7 @@ trap cleanup EXIT
 export MTOOLS_SKIP_CHECK=1
 
 # ---- Board registry ----------------------------------------------------------
-declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB
+declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB BOARD_KVM_DTB
 declare -a BOARD_BOOTS
 declare -a BOARD_CDTS
 BOARD_COUNT=0
@@ -140,10 +147,12 @@ add_board() {
         local name="$1" platforms="$2" dtb="$3"
         local boot_list="$4"
         local cdt_list="${5:-}"
+        local kvm_dtb="${6:-}"
 
         BOARD_NAME[BOARD_COUNT]="$name"
         BOARD_PLATFORMS[BOARD_COUNT]="$platforms"
         BOARD_DTB[BOARD_COUNT]="$dtb"
+        BOARD_KVM_DTB[BOARD_COUNT]="$kvm_dtb"
         BOARD_BOOTS[BOARD_COUNT]="$boot_list"
         BOARD_CDTS[BOARD_COUNT]="$cdt_list"
 
@@ -185,7 +194,8 @@ add_board \
 QCM6490 boot binaries (immutable)|https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_immutable_00150.zip|qcm6490_boot-binaries_immutable_00150.zip|711986b7e8ef86443bdd967c3ca4132b7d3db5ad9b5cfbce71bd09d0079fb7e9" \
         "RB3 Gen2 Vision Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip|qcs6490-rb3gen2-vision-kit_cdt.zip|a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c|cdt_vision_kit.bin|cdt.bin;;
 RB3 Gen2 Core Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip|qcs6490-rb3gen2-core-kit_cdt.zip|0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e|cdt_core_kit.bin|cdt_core_kit.bin;;
-RB3 Gen2 Industrial Mezz Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip|qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip|bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6|cdt_industrial_mezz_kit.bin|cdt_industrial_mezz_kit.bin"
+RB3 Gen2 Industrial Mezz Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip|qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip|bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6|cdt_industrial_mezz_kit.bin|cdt_industrial_mezz_kit.bin" \
+        "qcom/qcs6490-rb3gen2-el2.dtb"
 
 download_if_needed() {
         local url="$1" out="$2"
@@ -248,17 +258,105 @@ ensure_qcom_dtb_metadata() {
         fi
         # Only fetch from origin if the pinned commit is not already present locally.
         # This avoids a slow/fragile network round-trip on every invocation.
-        if ! git -C "$dest" cat-file -e "${QCOM_DTB_METADATA_COMMIT}^{commit}" 2>/dev/null; then
+        if ! git -c safe.directory="$dest" -C "$dest" cat-file -e "${QCOM_DTB_METADATA_COMMIT}^{commit}" 2>/dev/null; then
                 echo "Fetching qcom-dtb-metadata (need $QCOM_DTB_METADATA_COMMIT)" >&2
-                git -C "$dest" fetch origin >&2
+                git -c safe.directory="$dest" -C "$dest" fetch origin >&2
         fi
-        git -C "$dest" checkout "$QCOM_DTB_METADATA_COMMIT" >&2
+        git -c safe.directory="$dest" -C "$dest" checkout "$QCOM_DTB_METADATA_COMMIT" >&2
         local script="$dest/build-dtb-image.sh"
         [[ -f "$script" ]] || {
                 echo "WARNING: build-dtb-image.sh not found in $dest (commit $QCOM_DTB_METADATA_COMMIT)" >&2
                 return 1
         }
         echo "$dest"
+}
+
+create_fit_dtb_image() {
+        local metadata_dir="$1"
+        local dtb_staging="$2"
+        local out_vfat="$3"
+
+        local fit_dir="${BUILD_DIR}/qcs6490_fit"
+        rm -rf "$fit_dir"
+        mkdir -p "$fit_dir/arch/arm64/boot/dts/qcom" "$fit_dir/out"
+
+        cp -a "$dtb_staging/qcom/." "$fit_dir/arch/arm64/boot/dts/qcom/"
+        dtc -I dts -O dtb -o "$fit_dir/qcom-metadata.dtb" "$metadata_dir/qcom-metadata.dts"
+
+        local its="$fit_dir/qcs6490-fit-image.its"
+        {
+                cat <<'EOF'
+/dts-v1/;
+
+/ {
+	description = "Qualcomm qcs6490 FIT DTB image";
+	#address-cells = <1>;
+
+	images {
+		fdt-qcom-metadata.dtb {
+			data = /incbin/("./qcom-metadata.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+		};
+EOF
+
+                emit_fit_image_node() {
+                        local dtb_name="$1"
+                        [[ -f "$fit_dir/arch/arm64/boot/dts/qcom/$dtb_name" ]] || return 0
+                        cat <<EOF
+		fdt-${dtb_name} {
+			data = /incbin/("./arch/arm64/boot/dts/qcom/${dtb_name}");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+		};
+EOF
+                }
+
+                emit_fit_image_node "qcs6490-rb3gen2.dtb"
+                emit_fit_image_node "qcs6490-rb3gen2-vision-mezzanine.dtb"
+                emit_fit_image_node "qcs6490-rb3gen2-industrial-mezzanine.dtb"
+                emit_fit_image_node "qcs6490-rb3gen2-industrial-mezzanine-bt-uart.dtb"
+                emit_fit_image_node "qcs6490-rb3gen2-el2.dtb"
+                emit_fit_image_node "qcs6490-rb3gen2-vision-mezzanine-el2.dtb"
+                emit_fit_image_node "qcs6490-rb3gen2-industrial-mezzanine-el2.dtb"
+
+                cat <<'EOF'
+	};
+
+	configurations {
+EOF
+
+                emit_fit_config_node() {
+                        local node="$1" compatible="$2" dtb_name="$3"
+                        [[ -f "$fit_dir/arch/arm64/boot/dts/qcom/$dtb_name" ]] || return 0
+                        cat <<EOF
+		${node} {
+			compatible = "${compatible}";
+			fdt = "fdt-${dtb_name}";
+		};
+EOF
+                }
+
+                emit_fit_config_node "conf-qcs6490-iot" "qcom,qcs6490-iot" "qcs6490-rb3gen2.dtb"
+                emit_fit_config_node "conf-qcs6490-iot-subtype2" "qcom,qcs6490-iot-subtype2" "qcs6490-rb3gen2-vision-mezzanine.dtb"
+                emit_fit_config_node "conf-qcs6490-iot-subtype9" "qcom,qcs6490-iot-subtype9" "qcs6490-rb3gen2-industrial-mezzanine.dtb"
+                emit_fit_config_node "conf-qcs6490-iot-subtype13" "qcom,qcs6490-iot-subtype13" "qcs6490-rb3gen2-industrial-mezzanine-bt-uart.dtb"
+                emit_fit_config_node "conf-qcs6490-iot-el2kvm" "qcom,qcs6490-iot-el2kvm" "qcs6490-rb3gen2-el2.dtb"
+                emit_fit_config_node "conf-qcs6490-iot-subtype2-el2kvm" "qcom,qcs6490-iot-subtype2-el2kvm" "qcs6490-rb3gen2-vision-mezzanine-el2.dtb"
+                emit_fit_config_node "conf-qcs6490-iot-subtype9-el2kvm" "qcom,qcs6490-iot-subtype9-el2kvm" "qcs6490-rb3gen2-industrial-mezzanine-el2.dtb"
+
+                cat <<'EOF'
+	};
+};
+EOF
+        } > "$its"
+
+        mkimage -f "$its" "$fit_dir/out/qclinux_fit.img" -E -B 8
+        rm -f "$out_vfat"
+        mkfs.vfat -S "$VFAT_SECTOR_SIZE" -C "$out_vfat" "$VFAT_MIN_KIB"
+        mcopy -D o -D O -i "$out_vfat" -vsmpQ "$fit_dir/out/qclinux_fit.img" ::/qclinux_fit.img
 }
 
 resolve_maybe_relative_to_artifactdir() {
@@ -664,10 +762,10 @@ if QCOM_DTB_METADATA_SCRIPT_DIR="$(ensure_qcom_dtb_metadata)"; then
                 echo "WARNING: No qcom/ subtree found in $(basename "$DTBS_TAR"); skipping FIT generation" >&2
         else
                 DTB_MULTIDTB_BIN="${ARTIFACTDIR}/dtb-multidtb.bin"
-                if bash "$QCOM_DTB_METADATA_SCRIPT_DIR/build-dtb-image.sh" \
-                        --dtb-src "$DTB_STAGING/qcom" \
-                        --out "$DTB_MULTIDTB_BIN" \
-                        --prune; then
+                if create_fit_dtb_image \
+                        "$QCOM_DTB_METADATA_SCRIPT_DIR" \
+                        "$DTB_STAGING" \
+                        "$DTB_MULTIDTB_BIN"; then
                         if [[ -f "$DTB_MULTIDTB_BIN" ]]; then
                                 echo "[✓] FIT multi-DTB image generated: $DTB_MULTIDTB_BIN"
                                 DTB_BIN_SRC="$DTB_MULTIDTB_BIN"
@@ -692,13 +790,32 @@ create_fit_dtb_vfat_artifacts() {
         local src_bin="$1"
         local out_dir="$2"
         local board_name="$3"
+        shift 3
 
         local -a vfat_names=()
 
+        add_vfat_name() {
+                local vfat_name="$1"
+                local existing
+                for existing in "${vfat_names[@]}"; do
+                        [[ "$existing" == "$vfat_name" ]] && return 0
+                done
+                vfat_names+=("$vfat_name")
+        }
 
         # Always create the generic multi-dtb image
-        vfat_names+=("dtb-multi-dtb-image.vfat")
-        vfat_names+=("dtb-${board_name}-image.vfat")
+        add_vfat_name "dtb-multi-dtb-image.vfat"
+        add_vfat_name "dtb-${board_name}-image.vfat"
+
+        local extra_dtb extra_base
+        for extra_dtb in "$@"; do
+                [[ -n "$extra_dtb" ]] || continue
+                extra_base="$(basename "$extra_dtb")"
+                extra_base="${extra_base%.dtb}"
+                extra_base="${extra_base%.dtbo}"
+                add_vfat_name "dtb-${extra_base}-image.vfat"
+        done
+
         for vfat_name in "${vfat_names[@]}"; do
                 cp --preserve=mode,timestamps -f "$src_bin" "${out_dir}/${vfat_name}"
         done
@@ -736,10 +853,29 @@ create_single_dtb_vfat_from_tar() {
         local size_kib
         size_kib="$(compute_fat_size_kib "$dtb_src")"
 
+        rm -f "$out_vfat"
         mkfs.vfat -S "$VFAT_SECTOR_SIZE" -C "$out_vfat" "$size_kib"
-        mcopy -vmp -i "$out_vfat" "$dtb_src" ::/combined-dtb.dtb
+        mcopy -D o -D O -vmp -i "$out_vfat" "$dtb_src" ::/combined-dtb.dtb
 
         rm -rf "$extract_dir"
+}
+
+select_xbl_config_for_flash() {
+        local flash_dir="$1"
+        local board_name="$2"
+
+        if [[ "$KVM_CONFIG" != "true" ]]; then
+                return 0
+        fi
+
+        if [[ ! -f "$flash_dir/xbl_config_kvm.elf" ]]; then
+                echo "WARNING: xbl_config_kvm.elf not found in $flash_dir; leaving default xbl_config.elf for $board_name" >&2
+                return 1
+        fi
+
+        cp --preserve=mode,timestamps -f "$flash_dir/xbl_config_kvm.elf" "$flash_dir/xbl_config.elf"
+        echo "[KVM] Using xbl_config_kvm.elf as xbl_config.elf for $board_name"
+        return 0
 }
 
 declare -A BOARD_RESULT BOARD_REASON
@@ -760,6 +896,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
     name="${BOARD_NAME[i]}"
     platforms="${BOARD_PLATFORMS[i]}"
     dtb="${BOARD_DTB[i]}"
+    kvm_dtb="${BOARD_KVM_DTB[i]}"
 
 
     echo "=== Board: $name ==="
@@ -770,6 +907,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             echo "  Name          : $name"
             echo "  Platforms     : $platforms"
             echo "  DTB           : $dtb"
+            echo "  KVM DTB       : ${kvm_dtb:-<none>}"
             echo "  Boot packages :"
             _dbg_list_boot() {
                     local _desc="$1" _url="$2" _filename="$3" _sha="$4"
@@ -858,6 +996,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
                 copy_boot_binaries_filtered "${BUILD_DIR}/${name}_boot_${_noext}" "$flash_dir"
         }
         for_each_boot "$i" _copy_boot
+        select_xbl_config_for_flash "$flash_dir" "$name" || true
 
                 _copy_cdt() {
                         local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
@@ -892,14 +1031,15 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         # DTB artifacts
         #   FIT mode  (DTB_BIN_SRC set): dtb-multidtb.bin is a 4 MiB FAT image
         #     containing qclinux_fit.img (filename hardcoded in UEFI firmware).
-        #     Copy it as dtb.bin and create named .vfat aliases.
+        #     Copy it as dtb.bin and create named .vfat aliases, including any
+        #     registered KVM/EL2 DTB names.
         #   Single-DTB fallback (DTB_BIN_SRC empty): extract the per-board .dtb from
         #     dtbs.tar.gz and pack it into a VFAT image as combined-dtb.dtb.
         # ---------------------------------------------------------------------
         if [[ -n "$DTB_BIN_SRC" ]]; then
             echo "[FIT] Using FIT multi-DTB image for $name/$platform"
             cp --preserve=mode,timestamps -f "$DTB_BIN_SRC" "$flash_dir/dtb.bin"
-            create_fit_dtb_vfat_artifacts "$DTB_BIN_SRC" "$flash_dir" "$name" >/dev/null
+            create_fit_dtb_vfat_artifacts "$DTB_BIN_SRC" "$flash_dir" "$name" "$kvm_dtb" >/dev/null
         else
             echo "[single-DTB] Using single-DTB fallback for $name/$platform (dtb: $dtb)"
             resolved_dtb="$(resolve_dtb_path "$dtb" "$DTBS_FILE" || true)"
@@ -914,6 +1054,21 @@ for ((i=0; i<BOARD_COUNT; i++)); do
                 main_vfat="${flash_dir}/dtb-${name}-image.vfat"
                 rm -f "$main_vfat"
                 create_single_dtb_vfat_from_tar "$resolved_dtb" "$main_vfat"
+
+                if [[ -n "$kvm_dtb" ]]; then
+                    resolved_kvm_dtb="$(resolve_dtb_path "$kvm_dtb" "$DTBS_FILE" || true)"
+                    if [[ -z "$resolved_kvm_dtb" ]]; then
+                        echo "WARNING: KVM DTB '$kvm_dtb' not found in $(basename "$DTBS_TAR"); skipping KVM DTB artifact for $name/$platform" >&2
+                        suggest_dtb_candidates "$kvm_dtb" "$DTBS_FILE"
+                    else
+                        kvm_base="$(basename "$kvm_dtb")"
+                        kvm_base="${kvm_base%.dtb}"
+                        kvm_base="${kvm_base%.dtbo}"
+                        kvm_vfat="${flash_dir}/dtb-${kvm_base}-image.vfat"
+                        rm -f "$kvm_vfat"
+                        create_single_dtb_vfat_from_tar "$resolved_kvm_dtb" "$kvm_vfat"
+                    fi
+                fi
                 fi
             fi
 
@@ -942,7 +1097,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             fi
         fi
         PLAT_RESULT["$name/$platform"]="BUILT"
-        PLAT_REASON["$name/$platform"]="ok (${disk_type})"
+        PLAT_REASON["$name/$platform"]="ok (${disk_type}; kvm_config=${KVM_CONFIG})"
         BOARD_RESULT["$name"]="BUILT"
         BOARD_REASON["$name"]="ok"
     done

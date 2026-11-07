@@ -33,6 +33,8 @@ ARTIFACTDIR      ?= build/out
 TARGET_BOARDS    ?= qcs6490-rb3gen2
 # Set USE_FIT_IMAGE=0 to use single-DTB mode instead of FIT multi-DTB
 USE_FIT_IMAGE    ?= 1
+# Set KVM_CONFIG=0 to keep the default non-KVM xbl_config.elf
+KVM_CONFIG       ?= 1
 EXTRA_FLASH_OPTS ?=
 
 export ARTIFACTDIR BUILD_OUTPUT KIWI_PROFILE_SLUG
@@ -86,6 +88,7 @@ flash: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
 	  --rootfs-ext4=$(ROOTFS_IMG) \
 	  --target-boards=$(TARGET_BOARDS) \
 	  --use-fit-image=$(USE_FIT_IMAGE) \
+	  --kvm-config=$(KVM_CONFIG) \
 	  $(EXTRA_FLASH_OPTS)
 
 clean:
@@ -123,6 +126,7 @@ help:
 	@echo "  DTBS_TAR           DTB tarball (auto: $(DTBS_TAR) from rootfs)"
 	@echo "  TARGET_BOARDS      Boards to flash; use 'all' for every board (default: $(TARGET_BOARDS))"
 	@echo "  USE_FIT_IMAGE      1 = FIT multi-DTB image, 0 = single-DTB VFAT (default: $(USE_FIT_IMAGE))"
+	@echo "  KVM_CONFIG         1 = use xbl_config_kvm.elf as xbl_config.elf, 0 = default XBL config (default: $(KVM_CONFIG))"
 	@echo "  ARTIFACTDIR        Flash package output directory (default: $(ARTIFACTDIR))"
 	@echo "  EXTRA_KIWI_OPTS    Extra flags for kiwi-ng"
 	@echo "  EXTRA_FLASH_OPTS   Extra flags for generate_flat_build.sh"
