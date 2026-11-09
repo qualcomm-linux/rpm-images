@@ -28,7 +28,7 @@ QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/0b3897c9c10
 QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
 
 QCOM_DTB_METADATA_URL="https://github.com/qualcomm-linux/qcom-dtb-metadata.git"
-QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-9c414872fb410cfa9c8a138b0d7ed111bc5349aa}"
+QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-c2c5fdab4419a6717d2e40bbab228cb9ff8a1620}"
 QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
 
 # VFAT sizing knobs (KiB)
@@ -666,8 +666,11 @@ if QCOM_DTB_METADATA_SCRIPT_DIR="$(ensure_qcom_dtb_metadata)"; then
                 DTB_MULTIDTB_BIN="${ARTIFACTDIR}/dtb-multidtb.bin"
                 if bash "$QCOM_DTB_METADATA_SCRIPT_DIR/build-dtb-image.sh" \
                         --dtb-src "$DTB_STAGING/qcom" \
-                        --out "$DTB_MULTIDTB_BIN" \
-                        --prune; then
+                        --soc qcs6490 \
+                        --board iot \
+                        --prune \
+                        --size "$(( (VFAT_MIN_KIB + 1023) / 1024 ))" \
+                        --out "$DTB_MULTIDTB_BIN"; then
                         if [[ -f "$DTB_MULTIDTB_BIN" ]]; then
                                 echo "[✓] FIT multi-DTB image generated: $DTB_MULTIDTB_BIN"
                                 DTB_BIN_SRC="$DTB_MULTIDTB_BIN"
