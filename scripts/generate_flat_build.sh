@@ -8,6 +8,7 @@ TARGET_BOARDS="${TARGET_BOARDS:-all}"
 
 # Image type: FIT multi-DTB (true) or single-DTB (false)
 USE_FIT_IMAGE="${USE_FIT_IMAGE:-true}"
+KVM_CONFIG="${KVM_CONFIG:-true}"
 
 # Verbosity and safety
 VERBOSE="${VERBOSE:-false}"
@@ -28,7 +29,7 @@ QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/0b3897c9c10
 QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
 
 QCOM_DTB_METADATA_URL="https://github.com/qualcomm-linux/qcom-dtb-metadata.git"
-QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-9c414872fb410cfa9c8a138b0d7ed111bc5349aa}"
+QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-c2c5fdab4419a6717d2e40bbab228cb9ff8a1620}"
 QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
 
 # VFAT sizing knobs (KiB)
@@ -55,6 +56,9 @@ DTB handling:
                                              (falls back to single-DTB on failure)
                                      false = single-DTB mode: extract per-board DTB from dtbs.tar.gz
                                              and pack into a VFAT image
+  --kvm-config=(true|false)         default: true
+                                     true  = use xbl_config_kvm.elf as xbl_config.elf
+                                             in the same flash package
   QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit (default: $QCOM_DTB_METADATA_COMMIT)
 Kernel artifact:
   VMLINUX_SRC=<path/to/vmlinux>    optional; use a known-good kernel ELF instead of rootfs extraction
@@ -77,6 +81,7 @@ for arg in "$@"; do
                 --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
                 --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
                 --use-fit-image=*)      USE_FIT_IMAGE="${arg#*=}";;
+                --kvm-config=*)         KVM_CONFIG="${arg#*=}";;
                 --verbose=*)            VERBOSE="${arg#*=}";;
                 --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
                 -h|--help) usage; exit 0;;
@@ -109,7 +114,7 @@ dbg() {
 }
 
 # Normalize boolean flags
-for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE; do
+for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE KVM_CONFIG; do
         val=$(normalize_bool "${!_b}")
         if [[ "$val" == "INVALID" ]]; then
                 echo "Invalid boolean for $_b: ${!_b}. Use true/false (or 1/0/yes/no)." >&2
@@ -666,8 +671,11 @@ if QCOM_DTB_METADATA_SCRIPT_DIR="$(ensure_qcom_dtb_metadata)"; then
                 DTB_MULTIDTB_BIN="${ARTIFACTDIR}/dtb-multidtb.bin"
                 if bash "$QCOM_DTB_METADATA_SCRIPT_DIR/build-dtb-image.sh" \
                         --dtb-src "$DTB_STAGING/qcom" \
-                        --out "$DTB_MULTIDTB_BIN" \
-                        --prune; then
+                        --soc qcs6490 \
+                        --board iot \
+                        --prune \
+                        --size "$(( (VFAT_MIN_KIB + 1023) / 1024 ))" \
+                        --out "$DTB_MULTIDTB_BIN"; then
                         if [[ -f "$DTB_MULTIDTB_BIN" ]]; then
                                 echo "[✓] FIT multi-DTB image generated: $DTB_MULTIDTB_BIN"
                                 DTB_BIN_SRC="$DTB_MULTIDTB_BIN"
@@ -740,6 +748,24 @@ create_single_dtb_vfat_from_tar() {
         mcopy -vmp -i "$out_vfat" "$dtb_src" ::/combined-dtb.dtb
 
         rm -rf "$extract_dir"
+}
+
+select_xbl_config_for_flash() {
+        local flash_dir="$1"
+        local board_name="$2"
+
+        if [[ "$KVM_CONFIG" != "true" ]]; then
+                return 0
+        fi
+
+        if [[ ! -f "$flash_dir/xbl_config_kvm.elf" ]]; then
+                echo "WARNING: xbl_config_kvm.elf not found in $flash_dir; leaving default xbl_config.elf for $board_name" >&2
+                return 1
+        fi
+
+        cp --preserve=mode,timestamps -f "$flash_dir/xbl_config_kvm.elf" "$flash_dir/xbl_config.elf"
+        echo "[KVM] Using xbl_config_kvm.elf as xbl_config.elf for $board_name"
+        return 0
 }
 
 declare -A BOARD_RESULT BOARD_REASON
@@ -858,6 +884,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
                 copy_boot_binaries_filtered "${BUILD_DIR}/${name}_boot_${_noext}" "$flash_dir"
         }
         for_each_boot "$i" _copy_boot
+        select_xbl_config_for_flash "$flash_dir" "$name" || true
 
                 _copy_cdt() {
                         local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
@@ -942,7 +969,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
             fi
         fi
         PLAT_RESULT["$name/$platform"]="BUILT"
-        PLAT_REASON["$name/$platform"]="ok (${disk_type})"
+        PLAT_REASON["$name/$platform"]="ok (${disk_type}; kvm_config=${KVM_CONFIG})"
         BOARD_RESULT["$name"]="BUILT"
         BOARD_REASON["$name"]="ok"
     done

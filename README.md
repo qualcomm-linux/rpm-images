@@ -131,6 +131,14 @@ named with the active `KIWI_PROFILE`:
 
 ```
 build/out/console-flash_qcs6490-rb3gen2_ufs/
+```
+
+Set `KVM_CONFIG=0` only if you need to keep the default non-KVM
+`xbl_config.elf`.
+
+The flash directory contains:
+
+```
 ├── prog_firehose_ddr_*.elf   # Firehose programmer
 ├── rawprogram*.xml           # Flash programming script
 ├── patch*.xml                # Patch script
@@ -162,6 +170,7 @@ different kit, swap in the matching CDT file (e.g. `cdt_core_kit.bin`) for
 | `--rootfs-ext4=<path>` | — | Root filesystem image |
 | `--target-boards=<list\|all>` | `all` | Comma-separated board names or `all` |
 | `--use-fit-image=(true\|false)` | `true` | `true` = FIT multi-DTB via `build-dtb-image.sh` (falls back to single-DTB on failure); `false` = single-DTB |
+| `--kvm-config=(true\|false)` | `true` | Use `xbl_config_kvm.elf` as `xbl_config.elf` in the same flash package |
 | `--verbose=(true\|false)` | `false` | Enable debug output |
 
 ### Makefile variables
@@ -173,6 +182,7 @@ different kit, swap in the matching CDT file (e.g. `cdt_core_kit.bin`) for
 | `PERF_BUILD` | `0` | `1` appends quiet serial-console kernel arguments |
 | `TARGET_BOARDS` | `qcs6490-rb3gen2` | Comma-separated boards (or `all`) for `make flash` |
 | `USE_FIT_IMAGE` | `1` | `1` = FIT multi-DTB image (recommended); `0` = single-DTB VFAT |
+| `KVM_CONFIG` | `1` | `1` = use `xbl_config_kvm.elf` as `xbl_config.elf`; `0` = keep default XBL config |
 | `BUILD_OUTPUT` | `build/output` | Base directory for per-variant kiwi outputs |
 | `ARTIFACTDIR` | `build/out` | Flash package output directory |
 | `EXTRA_FLASH_OPTS` | _unset_ | Extra flags forwarded to `generate_flat_build.sh` |
