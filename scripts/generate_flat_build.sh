@@ -3,95 +3,82 @@
 # SPDX-License-Identifier: BSD-3-Clause-Clear
 set -euo pipefail
 
-# ---- Defaults ---------------------------------------------------------------
+# ---- Parse CLI first (to allow early --help) --------------------------------
+for arg in "$@"; do
+        case "$arg" in
+                -h|--help)
+                        cat <<EOF
+Usage:
+  ./scripts/generate_flat_build.sh [OPTIONS]
+
+Inputs:
+  --target-boards=<list|all>        default: all
+                                    e.g. "qcs6490-rb3gen2"
+
+Optional flat images (filenames are rewired to match their basenames):
+  --esp-vfat=<path/to/efi.bin>
+  --rootfs-ext4=<path/to/rootfs.img>
+
+DTB handling:
+  --dtbs-tar=<path/to/dtbs.tar.gz>  default: "\$PWD/linux/build/out/dtbs.tar.gz"
+  --use-fit-image=(true|false)      default: from JSON
+                                     true  = generate FIT multi-DTB image via build-dtb-image.sh
+                                             (falls back to single-DTB on failure)
+                                     false = single-DTB mode: extract per-board DTB from dtbs.tar.gz
+                                             and pack into a VFAT image
+  --kvm-config=(true|false)         default: from JSON
+                                     true  = use xbl_config_kvm.elf as xbl_config.elf
+                                             in the same flash package
+
+Environment overrides (take precedence over JSON defaults):
+  QCOM_PTOOL_URL                    override qcom-ptool URL
+  QCOM_DTB_METADATA_URL             override qcom-dtb-metadata repository URL
+  QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit
+  VFAT_MIN_KIB                      minimum VFAT image size (KiB)
+  VFAT_SECTOR_SIZE                  VFAT sector size (bytes)
+  USE_FIT_IMAGE                     override use_fit_image from JSON
+  KVM_CONFIG                        override kvm_config from JSON
+  VMLINUX_SRC=<path/to/vmlinux>     optional; use a known-good kernel ELF instead of rootfs extraction
+
+Logging and safety:
+  --verbose=(true|false)            default: false
+  --allow-missing-sha=(true|false)  default: false (ERROR if SHA256 is missing)
+
+Outputs:
+   \$ARTIFACTDIR/\${KIWI_PROFILE_SLUG:+\$KIWI_PROFILE_SLUG-}flash_<board>_<disk_type>/
+
+CDT Selection:
+  By default, the Vision Kit CDT is installed as cdt.bin (the firmware default).
+  Alternative CDTs (e.g., Core Kit, Industrial Mezz Kit) are installed with
+  descriptive names (e.g., cdt_core_kit.bin) and can be manually renamed to
+  cdt.bin if needed.
+
+Configuration:
+  All defaults are loaded from boards_config.json. Environment variables override
+  JSON values. NO hardcoded fallbacks exist in the script - all configuration
+  must be present in JSON or environment.
+EOF
+                        exit 0
+                        ;;
+        esac
+done
+
+# ---- Environment-only variables (not in JSON) -------------------------------
 TARGET_BOARDS="${TARGET_BOARDS:-all}"
-
-# Image type: FIT multi-DTB (true) or single-DTB (false)
-USE_FIT_IMAGE="${USE_FIT_IMAGE:-true}"
-KVM_CONFIG="${KVM_CONFIG:-true}"
-
-# Verbosity and safety
 VERBOSE="${VERBOSE:-false}"
 ALLOW_MISSING_SHA="${ALLOW_MISSING_SHA:-false}"
-
 ESP_VFAT="${ESP_VFAT:-}"
 ROOTFS_EXT4="${ROOTFS_EXT4:-}"
-
 DTBS_TAR="${DTBS_TAR:-$PWD/linux/build/out/dtbs.tar.gz}"
-VMLINUX_SRC="${VMLINUX_SRC:-}"        #optional override to a real kernel vmlinux file
-
+VMLINUX_SRC="${VMLINUX_SRC:-}"
 ROOTDIR="${ROOTDIR:-$PWD/work}"
 ARTIFACTDIR="${ARTIFACTDIR:-$PWD/build/out}"
 DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
 FLASH_DIR_PREFIX="${FLASH_DIR_PREFIX:-${KIWI_PROFILE_SLUG:+${KIWI_PROFILE_SLUG}-}}"
 
-QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/0b3897c9c10d41752e431744c8a5a6502a27828e.tar.gz"
-QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
-
-QCOM_DTB_METADATA_URL="https://github.com/qualcomm-linux/qcom-dtb-metadata.git"
-QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-c2c5fdab4419a6717d2e40bbab228cb9ff8a1620}"
-QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
-
-# VFAT sizing knobs (KiB)
-# Use 4096-byte sectors to match UFS 4K sector size (same as qcom-deb-images).
-# Minimum 4096 KiB (4 MiB) matches the fixed size used by qcom-deb-images and
-# comfortably fits in the 64 MiB dtb_a/dtb_b partitions provisioned by ptool.
-VFAT_MIN_KIB="${VFAT_MIN_KIB:-4096}"          # minimum image size (KiB)
-VFAT_SECTOR_SIZE="${VFAT_SECTOR_SIZE:-4096}"   # sector size for mkfs.vfat -S (UFS = 4096)
-
-usage() {
-        cat <<EOF
-Usage:
-  ./scripts/generate_flat_build.sh [OPTIONS]
-Inputs:
-  --target-boards=<list|all>        default: all
-                                    e.g. "qcs6490-rb3gen2"
-Optional flat images (filenames are rewired to match their basenames):
-  --esp-vfat=<path/to/efi.bin>
-  --rootfs-ext4=<path/to/rootfs.img>
-DTB handling:
-  --dtbs-tar=<path/to/dtbs.tar.gz>  default: "$PWD/linux/build/out/dtbs.tar.gz"
-  --use-fit-image=(true|false)      default: true
-                                     true  = generate FIT multi-DTB image via build-dtb-image.sh
-                                             (falls back to single-DTB on failure)
-                                     false = single-DTB mode: extract per-board DTB from dtbs.tar.gz
-                                             and pack into a VFAT image
-  --kvm-config=(true|false)         default: true
-                                     true  = use xbl_config_kvm.elf as xbl_config.elf
-                                             in the same flash package
-  QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit (default: $QCOM_DTB_METADATA_COMMIT)
-Kernel artifact:
-  VMLINUX_SRC=<path/to/vmlinux>    optional; use a known-good kernel ELF instead of rootfs extraction
-Logging and safety:
-  --verbose=(true|false)            default: false
-  --allow-missing-sha=(true|false)  default: false (ERROR if SHA256 is missing)
-VFAT options (advanced):
-  VFAT_MIN_KIB                      default: $VFAT_MIN_KIB
-  VFAT_SECTOR_SIZE                  default: $VFAT_SECTOR_SIZE
-Outputs:
-   \$ARTIFACTDIR/\${KIWI_PROFILE_SLUG:+\$KIWI_PROFILE_SLUG-}flash_<board>_ufs/
-EOF
-}
-
-# ---- Parse CLI --------------------------------------------------------------
-for arg in "$@"; do
-        case "$arg" in
-                --target-boards=*)      TARGET_BOARDS="${arg#*=}";;
-                --esp-vfat=*)           ESP_VFAT="${arg#*=}";;
-                --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
-                --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
-                --use-fit-image=*)      USE_FIT_IMAGE="${arg#*=}";;
-                --kvm-config=*)         KVM_CONFIG="${arg#*=}";;
-                --verbose=*)            VERBOSE="${arg#*=}";;
-                --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
-                -h|--help) usage; exit 0;;
-                *) echo "Unknown option: $arg" >&2; usage; exit 1;;
-        esac
-done
-
 # ---- Helpers: deps & utils ---------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
-need curl; need git; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3
+need curl; need git; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3; need jq
 
 normalize_bool() {
         local v
@@ -112,6 +99,84 @@ log_debug() {
 dbg() {
         [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2 || true
 }
+
+# ---- Load JSON and apply defaults with environment override support ---------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOARDS_JSON="${BOARDS_JSON:-$SCRIPT_DIR/boards_config.json}"
+[[ -f "$BOARDS_JSON" ]] || { echo "ERROR: boards_config.json not found: $BOARDS_JSON" >&2; exit 3; }
+jq empty "$BOARDS_JSON" 2>/dev/null || { echo "ERROR: Invalid JSON in $BOARDS_JSON" >&2; exit 3; }
+
+load_json_defaults() {
+        local json_file="$1"
+
+	# Load from JSON only if environment variable is not already set
+        # Override hierarchy: ENV > JSON (NO hardcoded fallbacks)
+        # If a value is missing from both ENV and JSON, the script will fail with a clear error
+        if [[ -z "${QCOM_PTOOL_URL:-}" ]]; then
+                QCOM_PTOOL_URL="$(jq -r '.defaults.qcom_ptool_url // empty' "$json_file")"
+                [[ -n "$QCOM_PTOOL_URL" ]] || { echo "ERROR: qcom_ptool_url not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${QCOM_DTB_METADATA_URL:-}" ]]; then
+                QCOM_DTB_METADATA_URL="$(jq -r '.defaults.qcom_dtb_metadata_url // empty' "$json_file")"
+                [[ -n "$QCOM_DTB_METADATA_URL" ]] || { echo "ERROR: qcom_dtb_metadata_url not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${QCOM_DTB_METADATA_COMMIT:-}" ]]; then
+                QCOM_DTB_METADATA_COMMIT="$(jq -r '.defaults.qcom_dtb_metadata_commit // empty' "$json_file")"
+                [[ -n "$QCOM_DTB_METADATA_COMMIT" ]] || { echo "ERROR: qcom_dtb_metadata_commit not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${VFAT_MIN_KIB:-}" ]]; then
+                VFAT_MIN_KIB="$(jq -r '.defaults.vfat_min_kib // empty' "$json_file")"
+                [[ -n "$VFAT_MIN_KIB" ]] || { echo "ERROR: vfat_min_kib not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${VFAT_SECTOR_SIZE:-}" ]]; then
+                VFAT_SECTOR_SIZE="$(jq -r '.defaults.vfat_sector_size // empty' "$json_file")"
+                [[ -n "$VFAT_SECTOR_SIZE" ]] || { echo "ERROR: vfat_sector_size not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${USE_FIT_IMAGE:-}" ]]; then
+                USE_FIT_IMAGE="$(jq -r '.defaults.use_fit_image // empty' "$json_file")"
+                [[ -n "$USE_FIT_IMAGE" ]] || { echo "ERROR: use_fit_image not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${KVM_CONFIG:-}" ]]; then
+                KVM_CONFIG="$(jq -r '.defaults.kvm_config // empty' "$json_file")"
+                [[ -n "$KVM_CONFIG" ]] || { echo "ERROR: kvm_config not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        dbg "Configuration loaded:"
+        dbg "  QCOM_PTOOL_URL=$QCOM_PTOOL_URL"
+        dbg "  QCOM_DTB_METADATA_URL=$QCOM_DTB_METADATA_URL"
+        dbg "  QCOM_DTB_METADATA_COMMIT=$QCOM_DTB_METADATA_COMMIT"
+        dbg "  VFAT_MIN_KIB=$VFAT_MIN_KIB"
+        dbg "  VFAT_SECTOR_SIZE=$VFAT_SECTOR_SIZE"
+        dbg "  USE_FIT_IMAGE=$USE_FIT_IMAGE"
+        dbg "  KVM_CONFIG=$KVM_CONFIG"
+}
+
+load_json_defaults "$BOARDS_JSON"
+
+QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
+QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
+
+# ---- Parse remaining CLI arguments ------------------------------------------
+for arg in "$@"; do
+        case "$arg" in
+                --target-boards=*)      TARGET_BOARDS="${arg#*=}";;
+                --esp-vfat=*)           ESP_VFAT="${arg#*=}";;
+                --rootfs-ext4=*)        ROOTFS_EXT4="${arg#*=}";;
+                --dtbs-tar=*)           DTBS_TAR="${arg#*=}";;
+                --use-fit-image=*)      USE_FIT_IMAGE="${arg#*=}";;
+                --kvm-config=*)         KVM_CONFIG="${arg#*=}";;
+                --verbose=*)            VERBOSE="${arg#*=}";;
+                --allow-missing-sha=*)  ALLOW_MISSING_SHA="${arg#*=}";;
+                -h|--help) ;; # already handled
+                *) echo "Unknown option: $arg" >&2; exit 1;;
+        esac
+done
 
 # Normalize boolean flags
 for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE KVM_CONFIG; do
@@ -183,14 +248,57 @@ for_each_cdt() {
         done < <(printf '%s\n' "$cdt_list" | awk 'BEGIN{RS=";;"}1')
 }
 
-# ---- Populate boards --------------------------------------------------------
-add_board \
-        "qcs6490-rb3gen2" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
-        "QCM6490 boot binaries |https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_00150.zip|qcm6490_boot-binaries_00150.zip|f6982fed9eaa546649f53c4aedc960f031123c3b7dac06803dc7dabbff533ee0;;
-QCM6490 boot binaries (immutable)|https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_immutable_00150.zip|qcm6490_boot-binaries_immutable_00150.zip|711986b7e8ef86443bdd967c3ca4132b7d3db5ad9b5cfbce71bd09d0079fb7e9" \
-        "RB3 Gen2 Vision Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip|qcs6490-rb3gen2-vision-kit_cdt.zip|a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c|cdt_vision_kit.bin|cdt.bin;;
-RB3 Gen2 Core Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip|qcs6490-rb3gen2-core-kit_cdt.zip|0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e|cdt_core_kit.bin|cdt_core_kit.bin;;
-RB3 Gen2 Industrial Mezz Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip|qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip|bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6|cdt_industrial_mezz_kit.bin|cdt_industrial_mezz_kit.bin"
+# ---- Populate boards from JSON ----------------------------------------------
+board_count=$(jq -r '.boards | length' "$BOARDS_JSON")
+[[ "$board_count" -gt 0 ]] || { echo "ERROR: No boards defined in $BOARDS_JSON" >&2; exit 3; }
+
+for ((idx=0; idx<board_count; idx++)); do
+	name=$(jq -r ".boards[$idx].name" "$BOARDS_JSON")
+	platforms=$(jq -r ".boards[$idx].platforms | if type == \"array\" then join(\" \") else . end" "$BOARDS_JSON")
+	dtb=$(jq -r ".boards[$idx].dtb" "$BOARDS_JSON")
+	# Validate required fields
+
+	[[ "$name" == "null" || -z "$name" ]] && { echo "ERROR: Board at index $idx missing 'name'" >&2; exit 3; }
+	[[ "$platforms" == "null" || -z "$platforms" ]] && { echo "ERROR: Board '$name' missing 'platforms'" >&2; exit 3; }
+	[[ "$dtb" == "null" || -z "$dtb" ]] && { echo "ERROR: Board '$name' missing 'dtb'" >&2; exit 3; }
+
+	# Build boot_list string
+	boot_list=""
+	boot_pkg_count=$(jq -r ".boards[$idx].boot_binaries | length" "$BOARDS_JSON")
+	for ((j=0; j<boot_pkg_count; j++)); do
+		desc=$(jq -r ".boards[$idx].boot_binaries[$j].description" "$BOARDS_JSON")
+		url=$(jq -r ".boards[$idx].boot_binaries[$j].url" "$BOARDS_JSON")
+		filename=$(jq -r ".boards[$idx].boot_binaries[$j].filename" "$BOARDS_JSON")
+		sha=$(jq -r ".boards[$idx].boot_binaries[$j].sha256" "$BOARDS_JSON")
+
+		# Validate boot binary fields
+		[[ "$url" == "null" || -z "$url" ]] && { echo "ERROR: Board '$name' boot_binary[$j] missing 'url'" >&2; exit 3; }
+		[[ "$filename" == "null" || -z "$filename" ]] && { echo "ERROR: Board '$name' boot_binary[$j] missing 'filename'" >&2; exit 3; }
+
+		boot_list="${boot_list}${desc}|${url}|${filename}|${sha};;"
+	done
+
+	# Build cdt_list string
+	cdt_list=""
+	cdt_pkg_count=$(jq -r ".boards[$idx].cdts | length" "$BOARDS_JSON")
+	for ((j=0; j<cdt_pkg_count; j++)); do
+		desc=$(jq -r ".boards[$idx].cdts[$j].description" "$BOARDS_JSON")
+		url=$(jq -r ".boards[$idx].cdts[$j].url" "$BOARDS_JSON")
+		filename=$(jq -r ".boards[$idx].cdts[$j].filename" "$BOARDS_JSON")
+		sha=$(jq -r ".boards[$idx].cdts[$j].sha256" "$BOARDS_JSON")
+		board_file=$(jq -r ".boards[$idx].cdts[$j].board_file" "$BOARDS_JSON")
+		dest_name=$(jq -r ".boards[$idx].cdts[$j].dest_name" "$BOARDS_JSON")
+		# Validate CDT fields
+		[[ "$url" == "null" || -z "$url" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'url'" >&2; exit 3; }
+		[[ "$filename" == "null" || -z "$filename" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'filename'" >&2; exit 3; }
+		[[ "$board_file" == "null" || -z "$board_file" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'board_file'" >&2; exit 3; }
+		[[ "$dest_name" == "null" || -z "$dest_name" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'dest_name'" >&2; exit 3; }
+
+		cdt_list="${cdt_list}${desc}|${url}|${filename}|${sha}|${board_file}|${dest_name};;"
+	done
+
+	add_board "$name" "$platforms" "$dtb" "$boot_list" "$cdt_list"
+done
 
 download_if_needed() {
         local url="$1" out="$2"
@@ -608,7 +716,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
                 _dl_boot() {
                         local _desc="$1" _url="$2" _filename="$3" _sha="$4"
                         download_if_needed "$_url" "$DOWNLOADDIR/$_filename"
-                        if [[ -n "$_sha" ]]; then
+                        if [[ -n "$_sha" && "$_sha" != "null" ]]; then
                                 verify_sha256 "$_sha" "$DOWNLOADDIR/$_filename"
                         else
                                 if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
@@ -625,7 +733,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         _dl_cdt() {
                 local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
                 download_if_needed "$_url" "$DOWNLOADDIR/$_filename"
-                if [[ -n "$_sha" ]]; then
+                if [[ -n "$_sha" && "$_sha" != "null" ]]; then
                         verify_sha256 "$_sha" "$DOWNLOADDIR/$_filename"
                 else
                         if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
