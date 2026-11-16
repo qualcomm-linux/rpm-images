@@ -19,6 +19,7 @@ concurrency:
 env:
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   FILESERVER_URL: "https://qli-prod-artifacts.qualcomm.com"
+  EFS_BUILD_DIR: /efs/rpm-images/${{ github.run_id }}
 
 jobs:
 
@@ -28,6 +29,8 @@ jobs:
     container:
       image: ghcr.io/qualcomm-linux/rpm-builder:centos10
       options: --user 0:0
+      volumes:
+        - /efs:/efs
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -47,29 +50,24 @@ jobs:
         with:
           kernel-ref: qcom-6.18.y-20260911
 
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: kernel-artifacts
-          if-no-files-found: error
-          path: |
-            linux/rpmbuild/RPMS/aarch64/kernel-*.rpm
-            linux/rpmbuild/SRPMS/kernel-*.src.rpm
-          retention-days: 1
+      - name: Stage kernel artifacts to EFS
+        run: |
+          set -euo pipefail
+          mkdir -p "${EFS_BUILD_DIR}/kernel-rpms" \
+                   "${EFS_BUILD_DIR}/kernel-srpms" \
+                   "${EFS_BUILD_DIR}/kernel-vmlinux"
+          cp linux/rpmbuild/RPMS/aarch64/kernel-*.rpm "${EFS_BUILD_DIR}/kernel-rpms/"
+          cp linux/rpmbuild/SRPMS/kernel-*.src.rpm    "${EFS_BUILD_DIR}/kernel-srpms/" 2>/dev/null || true
+          cp linux/vmlinux                            "${EFS_BUILD_DIR}/kernel-vmlinux/"
+          echo "Staged kernel artifacts under ${EFS_BUILD_DIR}"
+          ls -R "${EFS_BUILD_DIR}"/kernel-* | head -50
 
-      - name: Upload kernel vmlinux ELF
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: kernel-vmlinux
-          if-no-files-found: error
-          path: linux/vmlinux
-          retention-days: 1
-
-      - name: Hand workspace back to runner user
+      - name: Hand workspace and EFS artifacts back to runner user
         if: always()
         run: |
           set -euo pipefail
           chown -R "${WORKSPACE_OWNER}" "$GITHUB_WORKSPACE" || true
+          chown -R "${WORKSPACE_OWNER}" "${EFS_BUILD_DIR}" || true
 
 
   publish-kernel-rpms:
@@ -77,18 +75,12 @@ jobs:
     needs: kernel-rpm
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
-      - name: Download kernel artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: kernel-artifacts
-          path: kernel-artifacts
-
       - name: Stage kernel RPMs for publishing
         run: |
           set -euo pipefail
           mkdir -p kernel-rpms
-          cp -a kernel-artifacts/RPMS/aarch64/kernel-*.rpm kernel-rpms/ 2>/dev/null || true
-          cp -a kernel-artifacts/SRPMS/kernel-*.src.rpm    kernel-rpms/ 2>/dev/null || true
+          cp -a "${EFS_BUILD_DIR}/kernel-rpms/"kernel-*.rpm      kernel-rpms/
+          cp -a "${EFS_BUILD_DIR}/kernel-srpms/"kernel-*.src.rpm kernel-rpms/ 2>/dev/null || true
           (cd kernel-rpms && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
 
       - name: Publish kernel RPMs (S3)
@@ -130,29 +122,17 @@ jobs:
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
 
-      - name: Download kernel artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: kernel-artifacts
-          path: kernel-artifacts
-
       - name: Stage kernel RPMs
         run: |
           set -euo pipefail
           mkdir -p packages
-          cp kernel-artifacts/RPMS/aarch64/*.rpm packages/
-
-      - name: Download kernel vmlinux ELF
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: kernel-vmlinux
-          path: kernel-vmlinux
+          cp -a "${EFS_BUILD_DIR}/kernel-rpms/"*.rpm packages/
 
       - name: Stage kernel vmlinux ELF
         run: |
           set -euo pipefail
           mkdir -p linux
-          cp kernel-vmlinux/vmlinux linux/vmlinux
+          cp -a "${EFS_BUILD_DIR}/kernel-vmlinux/vmlinux" linux/vmlinux
           file linux/vmlinux || true
 
       - name: Write build ID into kiwi root overlay
@@ -255,13 +235,12 @@ jobs:
           shopt -u nullglob
           test -n "$(find rpm-artifacts -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
 
-      - name: Upload flash package artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: rpm-artifacts-${{ matrix.image_family }}
-          if-no-files-found: error
-          path: rpm-artifacts
-          retention-days: 1
+      - name: Stage flash packages to EFS
+        run: |
+          set -euo pipefail
+          dest="${EFS_BUILD_DIR}/rpm-artifacts/${{ matrix.image_family }}"
+          mkdir -p "${dest}"
+          cp -a rpm-artifacts/*.tar.gz "${dest}/"
 
       - name: Stage SBOMs for publishing
         run: |
@@ -276,13 +255,12 @@ jobs:
           shopt -u nullglob
           test -n "$(find sboms -maxdepth 1 -type f -name '*.gz' -print -quit)"
 
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: sboms-${{ matrix.image_family }}
-          if-no-files-found: error
-          path: sboms
-          retention-days: 1
+      - name: Stage SBOMs to EFS
+        run: |
+          set -euo pipefail
+          dest="${EFS_BUILD_DIR}/sboms/${{ matrix.image_family }}"
+          mkdir -p "${dest}"
+          cp -a sboms/*.gz "${dest}/"
 
 
   publish-artifacts:
@@ -292,23 +270,11 @@ jobs:
     outputs:
       url: ${{ steps.url.outputs.url }}
     steps:
-      - name: Download flash package artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: rpm-artifacts-*
-          path: downloaded
-
-      - name: Download SBOM artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: sboms-*
-          path: downloaded
-
       - name: Stage flash packages for publishing
         run: |
           set -euo pipefail
           mkdir -p rpm-artifacts
-          find downloaded -path '*/rpm-artifacts-*/*.tar.gz' -type f -exec cp -a {} rpm-artifacts/ \;
+          find "${EFS_BUILD_DIR}/rpm-artifacts" -type f -name '*.tar.gz' -exec cp -a {} rpm-artifacts/ \;
           test -n "$(find rpm-artifacts -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
           (cd rpm-artifacts && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
 
@@ -325,7 +291,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p sboms
-          find downloaded -path '*/sboms-*/*.gz' -type f -exec cp -a {} sboms/ \;
+          find "${EFS_BUILD_DIR}/sboms" -type f -name '*.gz' -exec cp -a {} sboms/ \;
           test -n "$(find sboms -maxdepth 1 -type f -name '*.gz' -print -quit)"
 
       - name: Upload SBOMs (S3)
@@ -348,7 +314,7 @@ jobs:
           echo "Downloads URL: ${url}"
           echo "## Download URL" >> $GITHUB_STEP_SUMMARY
           echo "[${url}](${url})" >> $GITHUB_STEP_SUMMARY
-  
+
 
   build-successful:
     name: Build Successful
@@ -362,3 +328,24 @@ jobs:
           echo "Downloads URL: ${build_url}"
           echo "## Download URL" >> $GITHUB_STEP_SUMMARY
           echo "[${build_url}](${build_url})" >> $GITHUB_STEP_SUMMARY
+
+
+  cleanup-efs:
+    name: Clean up EFS build folder
+    needs: [publish-kernel-rpms, publish-artifacts]
+    if: always()
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Remove EFS build folder
+        run: |
+          set -euo pipefail
+          case "${EFS_BUILD_DIR}" in
+            /efs/rpm-images/*) ;;
+            *) echo "Refusing to delete unexpected path: '${EFS_BUILD_DIR}'" >&2; exit 1 ;;
+          esac
+          if [ -d "${EFS_BUILD_DIR}" ]; then
+            echo "Removing ${EFS_BUILD_DIR}"
+            sudo rm -rf "${EFS_BUILD_DIR}"
+          else
+            echo "Nothing to clean: ${EFS_BUILD_DIR} does not exist"
+          fi
