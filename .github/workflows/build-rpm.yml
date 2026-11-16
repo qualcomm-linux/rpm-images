@@ -19,15 +19,22 @@ concurrency:
 env:
   BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   FILESERVER_URL: "https://qli-prod-artifacts.qualcomm.com"
+  EFS_ROOT: /efs/qli/rpm-images
+  EFS_BUILD_DIR: /efs/qli/rpm-images/${{ github.run_id }}
 
 jobs:
 
   kernel-rpm:
     name: Phase 1 - Kernel RPM
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    outputs:
+      manifest_sha256: ${{ steps.stage.outputs.manifest_sha256 }}
     container:
       image: ghcr.io/qualcomm-linux/rpm-builder:centos10
       options: --user 0:0
+      # only expose this project's directory, not the whole shared mount
+      volumes:
+        - /efs/qli/rpm-images:/efs/qli/rpm-images
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -47,29 +54,40 @@ jobs:
         with:
           kernel-ref: qcom-6.18.y-20260911
 
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: kernel-artifacts
-          if-no-files-found: error
-          path: |
-            linux/rpmbuild/RPMS/aarch64/kernel-*.rpm
-            linux/rpmbuild/SRPMS/kernel-*.src.rpm
-          retention-days: 1
+      - name: Stage kernel artifacts to EFS
+        id: stage
+        run: |
+          set -euo pipefail
+          out=efs-out/kernel
+          dest="${EFS_BUILD_DIR}/kernel"
+          rm -rf "${out}"
+          mkdir -vp "${out}/rpms" "${out}/srpms" "${out}/vmlinux"
+          cp -av linux/rpmbuild/RPMS/aarch64/kernel-*.rpm "${out}/rpms/"
+          #  copy SRPM only if present
+          shopt -s nullglob
+          srpms=(linux/rpmbuild/SRPMS/kernel-*.src.rpm)
+          shopt -u nullglob
+          if (( ${#srpms[@]} > 0 )); then
+            cp -av "${srpms[@]}" "${out}/srpms/"
+          fi
+          cp -av linux/vmlinux "${out}/vmlinux/"
+          (cd "${out}" && find . -type f ! -name SHA256SUMS -print0 | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS)
+          cat "${out}/SHA256SUMS"
+          echo "manifest_sha256=$(sha256sum "${out}/SHA256SUMS" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          # start clean in case this is a full re-run of the same run_id
+          rm -rf "${dest}"
+          mkdir -p "$(dirname "${dest}")"
+          cp -a "${out}" "${dest}"
+          # perhaps help NFS sync
+          sync
 
-      - name: Upload kernel vmlinux ELF
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: kernel-vmlinux
-          if-no-files-found: error
-          path: linux/vmlinux
-          retention-days: 1
-
-      - name: Hand workspace back to runner user
+      - name: Hand workspace and EFS artifacts back to runner user
         if: always()
         run: |
           set -euo pipefail
           chown -R "${WORKSPACE_OWNER}" "$GITHUB_WORKSPACE" || true
+          chown -R "${WORKSPACE_OWNER}" "${EFS_BUILD_DIR}" || true
 
 
   publish-kernel-rpms:
@@ -77,18 +95,30 @@ jobs:
     needs: kernel-rpm
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
-      - name: Download kernel artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: kernel-artifacts
-          path: kernel-artifacts
+      - name: Fetch kernel artifacts from EFS
+        env:
+          MANIFEST_SHA256: ${{ needs.kernel-rpm.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          rm -rf kernel && cp -a "${EFS_BUILD_DIR}/kernel" kernel
+          echo "${MANIFEST_SHA256}  kernel/SHA256SUMS" | sha256sum -c -
+          # reject links and other non-regular entries, and any file that
+          # isn't in the manifest: sha256sum -c only checks the listed ones
+          if [ -n "$(find kernel ! -type f ! -type d -print -quit)" ]; then
+            echo "Non-regular entry in kernel" >&2
+            exit 1
+          fi
+          diff -u <(cut -d' ' -f3- kernel/SHA256SUMS | LC_ALL=C sort) \
+                  <(cd kernel && find . -type f ! -path ./SHA256SUMS | LC_ALL=C sort) \
+            || { echo "Files in kernel don't match its manifest" >&2; exit 1; }
+          (cd kernel && sha256sum -c SHA256SUMS)
 
       - name: Stage kernel RPMs for publishing
         run: |
           set -euo pipefail
           mkdir -p kernel-rpms
-          cp -a kernel-artifacts/RPMS/aarch64/kernel-*.rpm kernel-rpms/ 2>/dev/null || true
-          cp -a kernel-artifacts/SRPMS/kernel-*.src.rpm    kernel-rpms/ 2>/dev/null || true
+          shopt -s nullglob
+          cp -av kernel/rpms/kernel-*.rpm kernel/srpms/*.src.rpm kernel-rpms/
           (cd kernel-rpms && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
 
       - name: Publish kernel RPMs (S3)
@@ -113,6 +143,11 @@ jobs:
     name: Phase 2 - Images, extract & flash packages (${{ matrix.image_family }})
     needs: [kernel-rpm]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    # one output per matrix leg: each leg sets only its own key, so the
+    # values don't overwrite each other when the matrix outputs are merged
+    outputs:
+      manifest_sha256_console: ${{ steps.stage_efs.outputs.manifest_sha256_console }}
+      manifest_sha256_gnome: ${{ steps.stage_efs.outputs.manifest_sha256_gnome }}
     strategy:
       fail-fast: false
       matrix:
@@ -130,29 +165,35 @@ jobs:
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
 
-      - name: Download kernel artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: kernel-artifacts
-          path: kernel-artifacts
+      - name: Fetch kernel artifacts from EFS
+        env:
+          MANIFEST_SHA256: ${{ needs.kernel-rpm.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          rm -rf kernel && cp -a "${EFS_BUILD_DIR}/kernel" kernel
+          echo "${MANIFEST_SHA256}  kernel/SHA256SUMS" | sha256sum -c -
+          # reject links and other non-regular entries, and any file that
+          # isn't in the manifest: sha256sum -c only checks the listed ones
+          if [ -n "$(find kernel ! -type f ! -type d -print -quit)" ]; then
+            echo "Non-regular entry in kernel" >&2
+            exit 1
+          fi
+          diff -u <(cut -d' ' -f3- kernel/SHA256SUMS | LC_ALL=C sort) \
+                  <(cd kernel && find . -type f ! -path ./SHA256SUMS | LC_ALL=C sort) \
+            || { echo "Files in kernel don't match its manifest" >&2; exit 1; }
+          (cd kernel && sha256sum -c SHA256SUMS)
 
       - name: Stage kernel RPMs
         run: |
           set -euo pipefail
           mkdir -p packages
-          cp kernel-artifacts/RPMS/aarch64/*.rpm packages/
-
-      - name: Download kernel vmlinux ELF
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: kernel-vmlinux
-          path: kernel-vmlinux
+          cp -av kernel/rpms/*.rpm packages/
 
       - name: Stage kernel vmlinux ELF
         run: |
           set -euo pipefail
           mkdir -p linux
-          cp kernel-vmlinux/vmlinux linux/vmlinux
+          cp -av kernel/vmlinux/vmlinux linux/vmlinux
           file linux/vmlinux || true
 
       - name: Write build ID into kiwi root overlay
@@ -255,13 +296,6 @@ jobs:
           shopt -u nullglob
           test -n "$(find rpm-artifacts -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
 
-      - name: Upload flash package artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: rpm-artifacts-${{ matrix.image_family }}
-          if-no-files-found: error
-          path: rpm-artifacts
-          retention-days: 1
 
       - name: Stage SBOMs for publishing
         run: |
@@ -276,13 +310,27 @@ jobs:
           shopt -u nullglob
           test -n "$(find sboms -maxdepth 1 -type f -name '*.gz' -print -quit)"
 
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: sboms-${{ matrix.image_family }}
-          if-no-files-found: error
-          path: sboms
-          retention-days: 1
+      - name: Stage flash packages and SBOMs to EFS
+        id: stage_efs
+        env:
+          IMAGE_FAMILY: ${{ matrix.image_family }}
+        run: |
+          set -euo pipefail
+          out="efs-out/images/${IMAGE_FAMILY}"
+          dest="${EFS_BUILD_DIR}/images/${IMAGE_FAMILY}"
+          rm -rf "${out}"
+          mkdir -vp "${out}/rpm-artifacts" "${out}/sboms"
+          cp -av rpm-artifacts/*.tar.gz "${out}/rpm-artifacts/"
+          cp -av sboms/*.gz "${out}/sboms/"
+          (cd "${out}" && find . -type f ! -name SHA256SUMS -print0 | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS)
+          cat "${out}/SHA256SUMS"
+          echo "manifest_sha256_${IMAGE_FAMILY}=$(sha256sum "${out}/SHA256SUMS" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          rm -rf "${dest}"
+          mkdir -p "$(dirname "${dest}")"
+          cp -a "${out}" "${dest}"
+          # perhaps help NFS sync
+          sync
 
 
   publish-artifacts:
@@ -292,23 +340,41 @@ jobs:
     outputs:
       url: ${{ steps.url.outputs.url }}
     steps:
-      - name: Download flash package artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: rpm-artifacts-*
-          path: downloaded
-
-      - name: Download SBOM artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          pattern: sboms-*
-          path: downloaded
+      - name: Fetch flash packages and SBOMs from EFS
+        env:
+          # keep in sync with the build-and-flash matrix
+          MANIFESTS: >-
+            console=${{ needs.build-and-flash.outputs.manifest_sha256_console }}
+            gnome=${{ needs.build-and-flash.outputs.manifest_sha256_gnome }}
+        run: |
+          set -euo pipefail
+          rm -rf images && mkdir -p images
+          for entry in ${MANIFESTS}; do
+            family="${entry%%=*}"
+            sum="${entry#*=}"
+            if [ -z "${sum}" ]; then
+              echo "No manifest checksum for ${family}" >&2
+              exit 1
+            fi
+            cp -a "${EFS_BUILD_DIR}/images/${family}" "images/${family}"
+            echo "${sum}  images/${family}/SHA256SUMS" | sha256sum -c -
+            # reject links and other non-regular entries, and any file that
+            # isn't in the manifest: sha256sum -c only checks the listed ones
+            if [ -n "$(find "images/${family}" ! -type f ! -type d -print -quit)" ]; then
+              echo "Non-regular entry in images/${family}" >&2
+              exit 1
+            fi
+            diff -u <(cut -d' ' -f3- "images/${family}"/SHA256SUMS | LC_ALL=C sort) \
+                    <(cd "images/${family}" && find . -type f ! -path ./SHA256SUMS | LC_ALL=C sort) \
+              || { echo "Files in images/${family} don't match its manifest" >&2; exit 1; }
+            (cd "images/${family}" && sha256sum -c SHA256SUMS)
+          done
 
       - name: Stage flash packages for publishing
         run: |
           set -euo pipefail
           mkdir -p rpm-artifacts
-          find downloaded -path '*/rpm-artifacts-*/*.tar.gz' -type f -exec cp -a {} rpm-artifacts/ \;
+          find images -path '*/rpm-artifacts/*.tar.gz' -type f -exec cp -a {} rpm-artifacts/ \;
           test -n "$(find rpm-artifacts -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
           (cd rpm-artifacts && sha256sum $(find . -maxdepth 1 -type f) | tee sha256sums.txt)
 
@@ -325,7 +391,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p sboms
-          find downloaded -path '*/sboms-*/*.gz' -type f -exec cp -a {} sboms/ \;
+          find images -path '*/sboms/*.gz' -type f -exec cp -a {} sboms/ \;
           test -n "$(find sboms -maxdepth 1 -type f -name '*.gz' -print -quit)"
 
       - name: Upload SBOMs (S3)
@@ -348,7 +414,7 @@ jobs:
           echo "Downloads URL: ${url}"
           echo "## Download URL" >> $GITHUB_STEP_SUMMARY
           echo "[${url}](${url})" >> $GITHUB_STEP_SUMMARY
-  
+
 
   build-successful:
     name: Build Successful
@@ -362,3 +428,26 @@ jobs:
           echo "Downloads URL: ${build_url}"
           echo "## Download URL" >> $GITHUB_STEP_SUMMARY
           echo "[${build_url}](${build_url})" >> $GITHUB_STEP_SUMMARY
+
+
+  # Only clean up after a fully successful run: a failed run keeps its
+  # artifacts so "Re-run failed jobs" can still find the kernel RPMs.
+  # Failed or cancelled runs are pruned by age in efs-maintenance.yml.
+  cleanup-efs:
+    name: Clean up EFS build folder
+    needs: [publish-kernel-rpms, publish-artifacts]
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Remove EFS build folder
+        run: |
+          set -euo pipefail
+          case "${EFS_BUILD_DIR}" in
+            "${EFS_ROOT}"/?*) ;;
+            *) echo "Refusing to delete unexpected path: '${EFS_BUILD_DIR}'" >&2; exit 1 ;;
+          esac
+          if [ -d "${EFS_BUILD_DIR}" ]; then
+            echo "Removing ${EFS_BUILD_DIR}"
+            sudo rm -rf "${EFS_BUILD_DIR}"
+          else
+            echo "Nothing to clean: ${EFS_BUILD_DIR} does not exist"
+          fi
