@@ -248,14 +248,57 @@ for_each_cdt() {
         done < <(printf '%s\n' "$cdt_list" | awk 'BEGIN{RS=";;"}1')
 }
 
-# ---- Populate boards --------------------------------------------------------
-add_board \
-        "qcs6490-rb3gen2" "qcs6490-rb3gen2/ufs" "qcom/qcs6490-rb3gen2.dtb" \
-        "QCM6490 boot binaries |https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_00150.zip|qcm6490_boot-binaries_00150.zip|f6982fed9eaa546649f53c4aedc960f031123c3b7dac06803dc7dabbff533ee0;;
-QCM6490 boot binaries (immutable)|https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_immutable_00150.zip|qcm6490_boot-binaries_immutable_00150.zip|711986b7e8ef86443bdd967c3ca4132b7d3db5ad9b5cfbce71bd09d0079fb7e9" \
-        "RB3 Gen2 Vision Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip|qcs6490-rb3gen2-vision-kit_cdt.zip|a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c|cdt_vision_kit.bin|cdt.bin;;
-RB3 Gen2 Core Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip|qcs6490-rb3gen2-core-kit_cdt.zip|0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e|cdt_core_kit.bin|cdt_core_kit.bin;;
-RB3 Gen2 Industrial Mezz Kit CDT|https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip|qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip|bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6|cdt_industrial_mezz_kit.bin|cdt_industrial_mezz_kit.bin"
+# ---- Populate boards from JSON ----------------------------------------------
+board_count=$(jq -r '.boards | length' "$BOARDS_JSON")
+[[ "$board_count" -gt 0 ]] || { echo "ERROR: No boards defined in $BOARDS_JSON" >&2; exit 3; }
+
+for ((idx=0; idx<board_count; idx++)); do
+        name=$(jq -r ".boards[$idx].name" "$BOARDS_JSON")
+        platforms=$(jq -r ".boards[$idx].platforms | if type == \"array\" then join(\" \") else . end" "$BOARDS_JSON")
+        dtb=$(jq -r ".boards[$idx].dtb" "$BOARDS_JSON")
+        # Validate required fields
+
+        [[ "$name" == "null" || -z "$name" ]] && { echo "ERROR: Board at index $idx missing 'name'" >&2; exit 3; }
+        [[ "$platforms" == "null" || -z "$platforms" ]] && { echo "ERROR: Board '$name' missing 'platforms'" >&2; exit 3; }
+        [[ "$dtb" == "null" || -z "$dtb" ]] && { echo "ERROR: Board '$name' missing 'dtb'" >&2; exit 3; }
+
+        # Build boot_list string
+        boot_list=""
+        boot_pkg_count=$(jq -r ".boards[$idx].boot_binaries | length" "$BOARDS_JSON")
+        for ((j=0; j<boot_pkg_count; j++)); do
+                desc=$(jq -r ".boards[$idx].boot_binaries[$j].description" "$BOARDS_JSON")
+                url=$(jq -r ".boards[$idx].boot_binaries[$j].url" "$BOARDS_JSON")
+                filename=$(jq -r ".boards[$idx].boot_binaries[$j].filename" "$BOARDS_JSON")
+                sha=$(jq -r ".boards[$idx].boot_binaries[$j].sha256" "$BOARDS_JSON")
+
+                # Validate boot binary fields
+                [[ "$url" == "null" || -z "$url" ]] && { echo "ERROR: Board '$name' boot_binary[$j] missing 'url'" >&2; exit 3; }
+                [[ "$filename" == "null" || -z "$filename" ]] && { echo "ERROR: Board '$name' boot_binary[$j] missing 'filename'" >&2; exit 3; }
+
+                boot_list="${boot_list}${desc}|${url}|${filename}|${sha};;"
+        done
+
+        # Build cdt_list string
+        cdt_list=""
+        cdt_pkg_count=$(jq -r ".boards[$idx].cdts | length" "$BOARDS_JSON")
+        for ((j=0; j<cdt_pkg_count; j++)); do
+                desc=$(jq -r ".boards[$idx].cdts[$j].description" "$BOARDS_JSON")
+                url=$(jq -r ".boards[$idx].cdts[$j].url" "$BOARDS_JSON")
+                filename=$(jq -r ".boards[$idx].cdts[$j].filename" "$BOARDS_JSON")
+                sha=$(jq -r ".boards[$idx].cdts[$j].sha256" "$BOARDS_JSON")
+                board_file=$(jq -r ".boards[$idx].cdts[$j].board_file" "$BOARDS_JSON")
+                dest_name=$(jq -r ".boards[$idx].cdts[$j].dest_name" "$BOARDS_JSON")
+                # Validate CDT fields
+                [[ "$url" == "null" || -z "$url" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'url'" >&2; exit 3; }
+                [[ "$filename" == "null" || -z "$filename" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'filename'" >&2; exit 3; }
+                [[ "$board_file" == "null" || -z "$board_file" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'board_file'" >&2; exit 3; }
+                [[ "$dest_name" == "null" || -z "$dest_name" ]] && { echo "ERROR: Board '$name' cdt[$j] missing 'dest_name'" >&2; exit 3; }
+
+                cdt_list="${cdt_list}${desc}|${url}|${filename}|${sha}|${board_file}|${dest_name};;"
+        done
+
+        add_board "$name" "$platforms" "$dtb" "$boot_list" "$cdt_list"
+done
 
 download_if_needed() {
         local url="$1" out="$2"
