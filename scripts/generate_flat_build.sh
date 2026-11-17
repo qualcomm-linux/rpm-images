@@ -4,11 +4,10 @@
 set -euo pipefail
 
 # ---- Defaults ---------------------------------------------------------------
+# Tool URLs, the qcom-dtb-metadata commit, VFAT sizing, USE_FIT_IMAGE and
+# KVM_CONFIG come from boards_config.json (see load_json_defaults below);
+# environment variables and CLI options take precedence over JSON values.
 TARGET_BOARDS="${TARGET_BOARDS:-all}"
-
-# Image type: FIT multi-DTB (true) or single-DTB (false)
-USE_FIT_IMAGE="${USE_FIT_IMAGE:-true}"
-KVM_CONFIG="${KVM_CONFIG:-true}"
 
 # Verbosity and safety
 VERBOSE="${VERBOSE:-false}"
@@ -25,19 +24,8 @@ ARTIFACTDIR="${ARTIFACTDIR:-$PWD/build/out}"
 DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
 FLASH_DIR_PREFIX="${FLASH_DIR_PREFIX:-${KIWI_PROFILE_SLUG:+${KIWI_PROFILE_SLUG}-}}"
 
-QCOM_PTOOL_URL="https://github.com/qualcomm-linux/qcom-ptool/archive/0b3897c9c10d41752e431744c8a5a6502a27828e.tar.gz"
 QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
-
-QCOM_DTB_METADATA_URL="https://github.com/qualcomm-linux/qcom-dtb-metadata.git"
-QCOM_DTB_METADATA_COMMIT="${QCOM_DTB_METADATA_COMMIT:-c2c5fdab4419a6717d2e40bbab228cb9ff8a1620}"
 QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
-
-# VFAT sizing knobs (KiB)
-# Use 4096-byte sectors to match UFS 4K sector size (same as qcom-deb-images).
-# Minimum 4096 KiB (4 MiB) matches the fixed size used by qcom-deb-images and
-# comfortably fits in the 64 MiB dtb_a/dtb_b partitions provisioned by ptool.
-VFAT_MIN_KIB="${VFAT_MIN_KIB:-4096}"          # minimum image size (KiB)
-VFAT_SECTOR_SIZE="${VFAT_SECTOR_SIZE:-4096}"   # sector size for mkfs.vfat -S (UFS = 4096)
 
 usage() {
         cat <<EOF
@@ -51,23 +39,27 @@ Optional flat images (filenames are rewired to match their basenames):
   --rootfs-ext4=<path/to/rootfs.img>
 DTB handling:
   --dtbs-tar=<path/to/dtbs.tar.gz>  default: "$PWD/linux/build/out/dtbs.tar.gz"
-  --use-fit-image=(true|false)      default: true
+  --use-fit-image=(true|false)      default: from JSON
                                      true  = generate FIT multi-DTB image via build-dtb-image.sh
                                              (falls back to single-DTB on failure)
                                      false = single-DTB mode: extract per-board DTB from dtbs.tar.gz
                                              and pack into a VFAT image
-  --kvm-config=(true|false)         default: true
+  --kvm-config=(true|false)         default: from JSON
                                      true  = use xbl_config_kvm.elf as xbl_config.elf
                                              in the same flash package
-  QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit (default: $QCOM_DTB_METADATA_COMMIT)
+  QCOM_DTB_METADATA_COMMIT          override pinned qcom-dtb-metadata commit (default: from JSON)
 Kernel artifact:
   VMLINUX_SRC=<path/to/vmlinux>    optional; use a known-good kernel ELF instead of rootfs extraction
 Logging and safety:
   --verbose=(true|false)            default: false
   --allow-missing-sha=(true|false)  default: false (ERROR if SHA256 is missing)
 VFAT options (advanced):
-  VFAT_MIN_KIB                      default: $VFAT_MIN_KIB
-  VFAT_SECTOR_SIZE                  default: $VFAT_SECTOR_SIZE
+  VFAT_MIN_KIB                      default: from JSON
+  VFAT_SECTOR_SIZE                  default: from JSON
+Configuration:
+  BOARDS_JSON                       default: scripts/boards_config.json
+  QCOM_PTOOL_URL                    override qcom-ptool URL (default: from JSON)
+  QCOM_DTB_METADATA_URL             override qcom-dtb-metadata URL (default: from JSON)
 Outputs:
    \$ARTIFACTDIR/\${KIWI_PROFILE_SLUG:+\$KIWI_PROFILE_SLUG-}flash_<board>_ufs/
 EOF
@@ -91,7 +83,7 @@ done
 
 # ---- Helpers: deps & utils ---------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 2; }; }
-need curl; need git; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3
+need curl; need git; need unzip; need sha256sum; need tar; need mkfs.vfat; need mcopy; need python3; need jq
 
 normalize_bool() {
         local v
@@ -112,6 +104,65 @@ log_debug() {
 dbg() {
         [[ "$VERBOSE" == "true" ]] && printf '%s\n' "$*" >&2 || true
 }
+
+# ---- Load JSON and apply defaults with environment override support ---------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOARDS_JSON="${BOARDS_JSON:-$SCRIPT_DIR/boards_config.json}"
+[[ -f "$BOARDS_JSON" ]] || { echo "ERROR: boards_config.json not found: $BOARDS_JSON" >&2; exit 3; }
+jq empty "$BOARDS_JSON" 2>/dev/null || { echo "ERROR: Invalid JSON in $BOARDS_JSON" >&2; exit 3; }
+
+load_json_defaults() {
+        local json_file="$1"
+
+        # Load from JSON only if environment variable is not already set
+        # Override hierarchy: ENV > JSON (NO hardcoded fallbacks)
+        # If a value is missing from both ENV and JSON, the script will fail with a clear error
+        if [[ -z "${QCOM_PTOOL_URL:-}" ]]; then
+                QCOM_PTOOL_URL="$(jq -r '.defaults.qcom_ptool_url // empty' "$json_file")"
+                [[ -n "$QCOM_PTOOL_URL" ]] || { echo "ERROR: qcom_ptool_url not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${QCOM_DTB_METADATA_URL:-}" ]]; then
+                QCOM_DTB_METADATA_URL="$(jq -r '.defaults.qcom_dtb_metadata_url // empty' "$json_file")"
+                [[ -n "$QCOM_DTB_METADATA_URL" ]] || { echo "ERROR: qcom_dtb_metadata_url not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${QCOM_DTB_METADATA_COMMIT:-}" ]]; then
+                QCOM_DTB_METADATA_COMMIT="$(jq -r '.defaults.qcom_dtb_metadata_commit // empty' "$json_file")"
+                [[ -n "$QCOM_DTB_METADATA_COMMIT" ]] || { echo "ERROR: qcom_dtb_metadata_commit not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${VFAT_MIN_KIB:-}" ]]; then
+                VFAT_MIN_KIB="$(jq -r '.defaults.vfat_min_kib // empty' "$json_file")"
+                [[ -n "$VFAT_MIN_KIB" ]] || { echo "ERROR: vfat_min_kib not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${VFAT_SECTOR_SIZE:-}" ]]; then
+                VFAT_SECTOR_SIZE="$(jq -r '.defaults.vfat_sector_size // empty' "$json_file")"
+                [[ -n "$VFAT_SECTOR_SIZE" ]] || { echo "ERROR: vfat_sector_size not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${USE_FIT_IMAGE:-}" ]]; then
+                USE_FIT_IMAGE="$(jq -r '.defaults.use_fit_image | if . == null then empty else . end' "$json_file")"
+                [[ -n "$USE_FIT_IMAGE" ]] || { echo "ERROR: use_fit_image not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        if [[ -z "${KVM_CONFIG:-}" ]]; then
+                KVM_CONFIG="$(jq -r '.defaults.kvm_config | if . == null then empty else . end' "$json_file")"
+                [[ -n "$KVM_CONFIG" ]] || { echo "ERROR: kvm_config not defined in JSON defaults and not set in environment" >&2; exit 3; }
+        fi
+
+        dbg "Configuration loaded:"
+        dbg "  QCOM_PTOOL_URL=$QCOM_PTOOL_URL"
+        dbg "  QCOM_DTB_METADATA_URL=$QCOM_DTB_METADATA_URL"
+        dbg "  QCOM_DTB_METADATA_COMMIT=$QCOM_DTB_METADATA_COMMIT"
+        dbg "  VFAT_MIN_KIB=$VFAT_MIN_KIB"
+        dbg "  VFAT_SECTOR_SIZE=$VFAT_SECTOR_SIZE"
+        dbg "  USE_FIT_IMAGE=$USE_FIT_IMAGE"
+        dbg "  KVM_CONFIG=$KVM_CONFIG"
+}
+
+load_json_defaults "$BOARDS_JSON"
 
 # Normalize boolean flags
 for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE KVM_CONFIG; do
