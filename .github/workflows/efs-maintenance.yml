@@ -1,0 +1,43 @@
+# This workflow prunes run directories left behind by failed or cancelled
+# runs; it runs weekly and can be triggered manually.
+name: EFS Maintenance
+
+on:
+  schedule:
+    - cron: '00 19 * * 0'
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: 'Remove run directories older than this many days'
+        type: string
+        default: '7'
+
+permissions: {}
+
+env:
+  EFS_ROOT: /efs/qli/rpm-images
+  MAX_AGE_DAYS: ${{ inputs.max_age_days || '7' }}
+
+jobs:
+  efs-maintenance:
+    name: EFS maintenance
+    # don't run from forks of the main repository
+    if: github.repository == 'qualcomm-linux/rpm-images'
+    runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
+    steps:
+      - name: Age-based cleanup of run directories
+        run: |
+          set -euo pipefail
+          case "${MAX_AGE_DAYS}" in
+            ''|*[!0-9]*) echo "Invalid max_age_days: '${MAX_AGE_DAYS}'" >&2; exit 1 ;;
+          esac
+          if [ ! -d "${EFS_ROOT}" ]; then
+            echo "${EFS_ROOT} does not exist, nothing to do"
+            exit 0
+          fi
+          find "${EFS_ROOT}" -mindepth 1 -maxdepth 1 -type d \
+              -mtime "+${MAX_AGE_DAYS}" -print0 \
+          | while IFS= read -r -d '' dir; do
+            echo "Removing old run directory: ${dir}"
+            sudo rm -rf "${dir}"
+          done
