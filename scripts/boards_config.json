@@ -1,0 +1,63 @@
+{
+  "version": "1.0.0",
+  "metadata": {
+    "description": "Board configuration for Qualcomm flat build generation",
+    "repository": "qualcomm-linux/rpm-images"
+    },
+  "defaults": {
+    "qcom_ptool_url": "https://github.com/qualcomm-linux/qcom-ptool/archive/0b3897c9c10d41752e431744c8a5a6502a27828e.tar.gz",
+    "qcom_dtb_metadata_url": "https://github.com/qualcomm-linux/qcom-dtb-metadata.git",
+    "qcom_dtb_metadata_commit": "c2c5fdab4419a6717d2e40bbab228cb9ff8a1620",
+    "vfat_min_kib": 4096,
+    "vfat_sector_size": 4096,
+    "use_fit_image": true,
+    "kvm_config": true
+  },
+  "boards": [
+    {
+      "name": "qcs6490-rb3gen2",
+      "platforms": ["qcs6490-rb3gen2/ufs"],
+      "dtb": "qcom/qcs6490-rb3gen2.dtb",
+      "boot_binaries": [
+        {
+          "description": "QCM6490 boot binaries",
+          "url": "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_00150.zip",
+          "filename": "qcm6490_boot-binaries_00150.zip",
+          "sha256": "f6982fed9eaa546649f53c4aedc960f031123c3b7dac06803dc7dabbff533ee0"
+        },
+        {
+          "description": "QCM6490 boot binaries (immutable)",
+          "url": "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_immutable_00150.zip",
+          "filename": "qcm6490_boot-binaries_immutable_00150.zip",
+          "sha256": "711986b7e8ef86443bdd967c3ca4132b7d3db5ad9b5cfbce71bd09d0079fb7e9"
+        }
+      ],
+      "cdts": [
+        {
+          "description": "RB3 Gen2 Vision Kit CDT (default)",
+          "url": "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-vision-kit.zip",
+          "filename": "qcs6490-rb3gen2-vision-kit_cdt.zip",
+          "sha256": "a339e297b454c4dc3805fe8cd11d6d8dcb801aa8f0c2dc691561c2785019fa3c",
+          "board_file": "cdt_vision_kit.bin",
+          "dest_name": "cdt.bin"
+        },
+        {
+          "description": "RB3 Gen2 Core Kit CDT",
+          "url": "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-core-kit.zip",
+          "filename": "qcs6490-rb3gen2-core-kit_cdt.zip",
+          "sha256": "0fe1c0b4050cf54203203812b2c1f0d9698823d8defc8b6516414a4e5e0c557e",
+          "board_file": "cdt_core_kit.bin",
+          "dest_name": "cdt_core_kit.bin"
+        },
+        {
+          "description": "RB3 Gen2 Industrial Mezz Kit CDT",
+          "url": "https://artifacts.codelinaro.org/artifactory/codelinaro-le/Qualcomm_Linux/QCS6490/cdt/rb3gen2-industrial-mezz-kit.zip",
+          "filename": "qcs6490-rb3gen2-industrial-mezz-kit_cdt.zip",
+          "sha256": "bb1c93e24c8c600f5850736294297a2f7256369c238a2d2e96acd68a118d31d6",
+          "board_file": "cdt_industrial_mezz_kit.bin",
+          "dest_name": "cdt_industrial_mezz_kit.bin"
+        }
+      ]
+    }
+  ]
+}
