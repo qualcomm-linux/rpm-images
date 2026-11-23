@@ -3,6 +3,8 @@
 #   make flash           3: Assemble per-board flash packages (default)
 
 SHELL := /bin/bash
+# pipefail: a failing command piped into tee must still fail the recipe
+.SHELLFLAGS := -eo pipefail -c
 
 ARCH     ?= aarch64
 
@@ -54,6 +56,9 @@ $(KIWI_PACKAGES_DIR)/repodata: $(wildcard $(KIWI_PACKAGES_DIR)/*.rpm)
 	createrepo_c $(KIWI_PACKAGES_DIR)/
 
 $(IMAGE_RAW): kiwi/config.xml $(KIWI_PACKAGES_DIR)/repodata
+	@# Start from an empty target dir: kiwi refuses to build over an existing
+	@# build/image-root, and a stale image.raw must not pass the check below.
+	sudo rm -rf --one-file-system -- "$(KIWI_TARGET_DIR)"
 	mkdir -p $(KIWI_TARGET_DIR) $(BUILD_LOGS) $(KIWI_SHARED_CACHE)
 	sudo kiwi-ng --target-arch $(ARCH) $(KIWI_PROFILE_OPTS) --type oem \
 	  --shared-cache-dir $(KIWI_SHARED_CACHE) \
