@@ -37,6 +37,7 @@ runs:
           unzip \
           tar \
           coreutils \
+          jq \
           git
 
     - name: Install kiwi-ng
