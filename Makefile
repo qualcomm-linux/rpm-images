@@ -51,11 +51,27 @@ DTBS_TAR     := $(FLASHIMAGES)/dtbs.tar.gz
 
 all: flash
 
-# Build (or refresh) the local RPM-MD repository index.
-$(KIWI_PACKAGES_DIR)/repodata: $(wildcard $(KIWI_PACKAGES_DIR)/*.rpm)
-	createrepo_c $(KIWI_PACKAGES_DIR)/
+# Everything kiwi reads from the description directory.
+KIWI_DESCRIPTION := kiwi/config.xml kiwi/config.sh kiwi/config-repo-signing.sh \
+                    $(shell find kiwi/root)
 
-$(IMAGE_RAW): kiwi/config.xml $(KIWI_PACKAGES_DIR)/repodata
+# Name, size and mtime of every RPM in the packages directory, rewritten on
+# each make run only when it differs. mtimes alone can't be trusted: an RPM
+# replaced in place with cp -p/-a can be older than repodata, and adding,
+# removing or replacing a file doesn't always make anything look newer.
+PACKAGES_MANIFEST ?= build/packages.manifest
+$(shell mkdir -p $(dir $(PACKAGES_MANIFEST)) && \
+  { find $(KIWI_PACKAGES_DIR)/ -maxdepth 1 -name '*.rpm' -printf '%p %s %T@\n' | sort; } \
+    > $(PACKAGES_MANIFEST).tmp && \
+  { cmp -s $(PACKAGES_MANIFEST).tmp $(PACKAGES_MANIFEST) && rm -f $(PACKAGES_MANIFEST).tmp || \
+    mv -f $(PACKAGES_MANIFEST).tmp $(PACKAGES_MANIFEST); })
+
+# Build (or refresh) the local RPM-MD repository index.
+$(KIWI_PACKAGES_DIR)/repodata: $(PACKAGES_MANIFEST)
+	createrepo_c $(KIWI_PACKAGES_DIR)/
+	touch $@
+
+$(IMAGE_RAW): $(KIWI_DESCRIPTION) $(KIWI_PACKAGES_DIR)/repodata
 	@# Start from an empty target dir: kiwi refuses to build over an existing
 	@# build/image-root, and a stale image.raw must not pass the check below.
 	sudo rm -rf --one-file-system -- "$(KIWI_TARGET_DIR)"
