@@ -9,8 +9,6 @@ on:
   - cron: "22 0 * * *"
 
 permissions:
-  checks: write
-  pull-requests: write
   contents: read
   packages: read
 
