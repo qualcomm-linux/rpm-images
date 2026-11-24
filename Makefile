@@ -114,11 +114,11 @@ flash: $(EFI_BIN) $(ROOTFS_IMG) $(DTBS_TAR)
 	  $(EXTRA_FLASH_OPTS)
 
 clean:
-	rm -rf $(BUILD_OUTPUT) $(ARTIFACTDIR) $(BUILD_LOGS)
+	sudo rm -rf --one-file-system -- "$(BUILD_OUTPUT)" "$(ARTIFACTDIR)" "$(BUILD_LOGS)"
 
 # Remove the generated repodata index from the local packages directory
 clean-cache:
-	rm -rf $(KIWI_PACKAGES_DIR)/repodata $(KIWI_SHARED_CACHE)
+	sudo rm -rf --one-file-system -- "$(KIWI_PACKAGES_DIR)/repodata" "$(KIWI_SHARED_CACHE)"
 
 # Remove cached boot-binary and CDT downloads
 clean-downloads:
