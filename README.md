@@ -52,7 +52,8 @@ python3 scripts/build_binrpm_pkg.py --qcom-next --cross-prefix aarch64-linux-gnu
 
 Copy the resulting RPMs into `packages/` before building the image; `make
 image` runs `createrepo_c` on that directory automatically and adds it to
-kiwi as a high-priority local repository:
+kiwi as the highest-priority repository, so its packages replace
+the same packages from the remote repositories:
 
 ```bash
 cp linux/rpmbuild/RPMS/aarch64/kernel-*.rpm packages/
