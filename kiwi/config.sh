@@ -39,6 +39,12 @@ chmod 440 /etc/sudoers.d/90-qcom
 # 027) yields these as drwxr-x---, breaking directory traversal for unprivileged
 # daemons.
 for d in \
+    /etc \
+    /etc/dconf \
+    /etc/dconf/db \
+    /etc/dconf/db/local.d \
+    /etc/pki \
+    /etc/pki/rpm-gpg \
     /usr \
     /usr/lib \
     /usr/lib/repart.d \
