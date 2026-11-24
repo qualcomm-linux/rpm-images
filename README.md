@@ -21,12 +21,12 @@ Building the image requires the following host dependencies:
 # Fedora / CentOS Stream
 sudo dnf install python3 git curl unzip dosfstools mtools rpm-build dtc uboot-tools \
                  createrepo_c e2fsprogs xfsprogs binfmt-support qemu-user-static parted kpartx \
-                 grub2-efi-aa64 shim pipx
+                 grub2-efi-aa64 shim pipx jq
 
 # Ubuntu / Debian
 sudo apt install python3 python3-pip pipx git curl unzip dosfstools mtools rpm cpio \
                  device-tree-compiler u-boot-tools createrepo-c binfmt-support \
-                 qemu-user-static qemu-utils parted kpartx e2fsprogs xfsprogs dnf
+                 qemu-user-static qemu-utils parted kpartx e2fsprogs xfsprogs dnf jq
 ```
 
 ## Repositories
