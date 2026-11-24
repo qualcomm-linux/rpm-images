@@ -86,7 +86,9 @@
   </repository>
 
   <!-- EPEL 10 - provides dracut-kiwi-oem-repart, pv, and other extras -->
-  <!-- imageinclude=false: build-time only, not baked into the image    -->
+  <!-- imageinclude=false: kiwi does not write this definition into    -->
+  <!-- the image. EPEL is still enabled on devices, because the image  -->
+  <!-- installs epel-release, which ships its own repository files.    -->
   <repository type="rpm-md" alias="epel10" imageinclude="false">
     <source path="https://dl.fedoraproject.org/pub/epel/10/Everything/aarch64/"/>
   </repository>
@@ -181,7 +183,7 @@
     <package name="fastrpc-services"/>
     <package name="hexagon-dsp-binaries-qualcomm-qcm6490-idp"/>
 
-    <!-- Repositories -->
+    <!-- Repositories: enables EPEL 10 on the running system -->
     <package name="epel-release"/>
   </packages>
 
