@@ -76,6 +76,7 @@ $(IMAGE_RAW): $(KIWI_DESCRIPTION) $(KIWI_PACKAGES_DIR)/repodata
 	@# build/image-root, and a stale image.raw must not pass the check below.
 	sudo rm -rf --one-file-system -- "$(KIWI_TARGET_DIR)"
 	mkdir -p $(KIWI_TARGET_DIR) $(BUILD_LOGS) $(KIWI_SHARED_CACHE)
+	@# Priority 1 for the local repo: remote repos in kiwi/config.xml use 2+.
 	sudo kiwi-ng --target-arch $(ARCH) $(KIWI_PROFILE_OPTS) --type oem \
 	  --shared-cache-dir $(KIWI_SHARED_CACHE) \
 	  system build \

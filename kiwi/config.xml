@@ -63,21 +63,25 @@
     </type>
   </preferences>
 
+  <!-- Priority 1 is reserved for the local packages/ repository that the  -->
+  <!-- Makefile adds with add-repo, so custom RPMs (e.g. a locally built   -->
+  <!-- kernel) always win. Remote overlay repositories use priority 2.    -->
+
   <!-- Qualcomm CentOS 10 OS repositories -->
   <!-- imageinclude=true: repository is baked into the image -->
-  <repository type="rpm-md" alias="qcom-centos10-os-aarch64" priority="1" imageinclude="true"
+  <repository type="rpm-md" alias="qcom-centos10-os-aarch64" priority="2" imageinclude="true"
               repository_gpgcheck="true" customize="config-repo-signing.sh">
     <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/aarch64/"/>
   </repository>
 
-  <repository type="rpm-md" alias="qcom-centos10-os-noarch" priority="1" imageinclude="true"
+  <repository type="rpm-md" alias="qcom-centos10-os-noarch" priority="2" imageinclude="true"
                repository_gpgcheck="true" customize="config-repo-signing.sh">
     <source path="https://softwarecenter.qualcomm.com/nexus/rpm/centos/10/os/noarch/"/>
   </repository>
 
   <!-- CodeLinaro qli-rpm: self-built bluez (and other qli-rpm team packages), -->
-  <!-- published without GPG signing, priority 1 so it wins over CentOS's bluez. -->
-  <repository type="rpm-md" alias="codelinaro-qli-rpm-aarch64" priority="1" imageinclude="true">
+  <!-- published without GPG signing, priority 2 so it wins over CentOS's bluez. -->
+  <repository type="rpm-md" alias="codelinaro-qli-rpm-aarch64" priority="2" imageinclude="true">
     <source path="https://artifacts.codelinaro.org/artifactory/qli-rpm/centos/10/os/aarch64/"/>
   </repository>
 
