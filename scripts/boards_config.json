@@ -7,7 +7,7 @@
   "defaults": {
     "qcom_ptool_url": "https://github.com/qualcomm-linux/qcom-ptool/archive/0b3897c9c10d41752e431744c8a5a6502a27828e.tar.gz",
     "qcom_dtb_metadata_url": "https://github.com/qualcomm-linux/qcom-dtb-metadata.git",
-    "qcom_dtb_metadata_commit": "c2c5fdab4419a6717d2e40bbab228cb9ff8a1620",
+    "qcom_dtb_metadata_commit": "d0f9554010fd67e1e69596110ca7fef41ae6cb0c",
     "vfat_min_kib": 4096,
     "vfat_sector_size": 4096,
     "use_fit_image": true,
