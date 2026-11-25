@@ -82,7 +82,7 @@ $(IMAGE_RAW): $(KIWI_DESCRIPTION) $(KIWI_PACKAGES_DIR)/repodata
 	  system build \
 	  --description kiwi/ \
 	  --target-dir $(KIWI_TARGET_DIR) \
-	  --add-repo file://$(CURDIR)/$(KIWI_PACKAGES_DIR),rpm-md,local-packages,1 \
+	  --add-repo file://$(abspath $(KIWI_PACKAGES_DIR)),rpm-md,local-packages,1 \
 	  $(EXTRA_KIWI_OPTS) \
 	  2>&1 | tee $(BUILD_LOGS)/build-cs-stream-$(KIWI_PROFILE_SLUG).log
 	@# Rename kiwi output (e.g. centos-stream10-aarch64.aarch64-10.0.0.raw) to image.raw
