@@ -24,7 +24,6 @@ ARTIFACTDIR="${ARTIFACTDIR:-$PWD/build/out}"
 DOWNLOADDIR="${DOWNLOADDIR:-$PWD/downloads}"
 FLASH_DIR_PREFIX="${FLASH_DIR_PREFIX:-${KIWI_PROFILE_SLUG:+${KIWI_PROFILE_SLUG}-}}"
 
-QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool.tar.gz"
 QCOM_DTB_METADATA_DIR="$DOWNLOADDIR/qcom-dtb-metadata"
 
 usage() {
@@ -59,6 +58,8 @@ VFAT options (advanced):
 Configuration:
   BOARDS_JSON                       default: scripts/boards_config.json
   QCOM_PTOOL_URL                    override qcom-ptool URL (default: from JSON)
+  QCOM_PTOOL_SHA256                 SHA256 of the qcom-ptool tarball (default: from JSON);
+                                    must be updated together with QCOM_PTOOL_URL
   QCOM_DTB_METADATA_URL             override qcom-dtb-metadata URL (default: from JSON)
 Outputs:
    \$ARTIFACTDIR/\${KIWI_PROFILE_SLUG:+\$KIWI_PROFILE_SLUG-}flash_<board>_ufs/
@@ -122,6 +123,10 @@ load_json_defaults() {
                 [[ -n "$QCOM_PTOOL_URL" ]] || { echo "ERROR: qcom_ptool_url not defined in JSON defaults and not set in environment" >&2; exit 3; }
         fi
 
+        if [[ -z "${QCOM_PTOOL_SHA256:-}" ]]; then
+                QCOM_PTOOL_SHA256="$(jq -r '.defaults.qcom_ptool_sha256 // empty' "$json_file")"
+        fi
+
         if [[ -z "${QCOM_DTB_METADATA_URL:-}" ]]; then
                 QCOM_DTB_METADATA_URL="$(jq -r '.defaults.qcom_dtb_metadata_url // empty' "$json_file")"
                 [[ -n "$QCOM_DTB_METADATA_URL" ]] || { echo "ERROR: qcom_dtb_metadata_url not defined in JSON defaults and not set in environment" >&2; exit 3; }
@@ -154,6 +159,7 @@ load_json_defaults() {
 
         dbg "Configuration loaded:"
         dbg "  QCOM_PTOOL_URL=$QCOM_PTOOL_URL"
+        dbg "  QCOM_PTOOL_SHA256=${QCOM_PTOOL_SHA256:-<none>}"
         dbg "  QCOM_DTB_METADATA_URL=$QCOM_DTB_METADATA_URL"
         dbg "  QCOM_DTB_METADATA_COMMIT=$QCOM_DTB_METADATA_COMMIT"
         dbg "  VFAT_MIN_KIB=$VFAT_MIN_KIB"
@@ -163,6 +169,10 @@ load_json_defaults() {
 }
 
 load_json_defaults "$BOARDS_JSON"
+
+# Name the cached tarball after its URL, so pointing QCOM_PTOOL_URL at another
+# revision downloads that revision instead of reusing the old tarball.
+QCOM_PTOOL_TARBALL="$DOWNLOADDIR/qcom-ptool-$(printf '%s' "$QCOM_PTOOL_URL" | sha256sum | cut -c1-16).tar.gz"
 
 # Normalize boolean flags
 for _b in VERBOSE ALLOW_MISSING_SHA USE_FIT_IMAGE KVM_CONFIG; do
@@ -362,7 +372,6 @@ unpack_zip_smart() {
 }
 
 ensure_qcom_ptool() {
-        download_if_needed "$QCOM_PTOOL_URL" "$QCOM_PTOOL_TARBALL"
         local dest="$DOWNLOADDIR/qcom-ptool"
         local sha_file="$dest/.ptool.sha256"
         mkdir -p "$dest"
@@ -733,6 +742,7 @@ else
         exit 11
 fi
 
+fetch_verified "$QCOM_PTOOL_URL" "$QCOM_PTOOL_TARBALL" "${QCOM_PTOOL_SHA256:-}"
 QCOM_PTOOL_DIR="$(ensure_qcom_ptool)"
 
 for ((i=0; i<BOARD_COUNT; i++)); do
