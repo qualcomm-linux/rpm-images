@@ -178,7 +178,10 @@ mkdir -p "$ROOTDIR" "$ARTIFACTDIR" "$DOWNLOADDIR"
 
 BUILD_DIR="${ROOTDIR}/build.$$"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
+# Partial file of the download in progress, removed if the script exits mid-download
+DL_TMP=""
 cleanup() {
+        [[ -n "$DL_TMP" ]] && rm -f "$DL_TMP"
         [[ -d "$ROOTDIR" && "$ROOTDIR" == "$PWD"/work ]] && rm -rf "$ROOTDIR"
 }
 trap cleanup EXIT
@@ -294,13 +297,50 @@ download_if_needed() {
         fi
         echo "Downloading: $url" >&2
         mkdir -p "$(dirname "$out")"
-        local tmp="${out}.tmp.$$"; rm -f "$tmp"
-        curl -L --fail --retry 5 --retry-all-errors --connect-timeout 15 --max-time 1200 -o "$tmp" "$url"
-        mv -f "$tmp" "$out"
+        DL_TMP="${out}.tmp.$$"; rm -f "$DL_TMP"
+        if ! curl -L --fail --retry 5 --retry-all-errors --connect-timeout 15 --max-time 1200 -o "$DL_TMP" "$url"; then
+                rm -f "$DL_TMP"; DL_TMP=""
+                echo "ERROR: Download failed: $url" >&2
+                exit 13
+        fi
+        mv -f "$DL_TMP" "$out"; DL_TMP=""
 }
 
 verify_sha256() {
         echo "${1}  ${2}" | sha256sum --strict -c -;
+}
+
+# Download url to out, reusing a cached copy only if it matches sha. A cached
+# copy that doesn't match (e.g. after a checksum update in boards_config.json)
+# is downloaded again; a download that doesn't match is removed, not cached.
+fetch_verified() {
+        local url="$1" out="$2" sha="$3"
+
+        if [[ -z "$sha" || "$sha" == "null" ]]; then
+                if [[ "$ALLOW_MISSING_SHA" != "true" ]]; then
+                        echo "ERROR: No SHA256 provided for $(basename "$out")" >&2
+                        exit 10
+                fi
+                echo "WARNING: No SHA256 provided for $(basename "$out") (continuing due to --allow-missing-sha=true)" >&2
+                download_if_needed "$url" "$out"
+                return 0
+        fi
+
+        if [[ -f "$out" ]]; then
+                if verify_sha256 "$sha" "$out" >/dev/null 2>&1; then
+                        log_debug "Already present: $out"
+                        return 0
+                fi
+                echo "Cached $out does not match its SHA256; downloading it again" >&2
+                rm -f "$out"
+        fi
+
+        download_if_needed "$url" "$out"
+        if ! verify_sha256 "$sha" "$out" >&2; then
+                echo "ERROR: SHA256 mismatch for $(basename "$out") downloaded from $url" >&2
+                rm -f "$out"
+                exit 10
+        fi
 }
 
 unpack_zip_smart() {
@@ -701,33 +741,14 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         if grep -Fxq "$name" "$TARGETS_FILE"; then
                 _dl_boot() {
                         local _desc="$1" _url="$2" _filename="$3" _sha="$4"
-                        download_if_needed "$_url" "$DOWNLOADDIR/$_filename"
-                        if [[ -n "$_sha" && "$_sha" != "null" ]]; then
-                                verify_sha256 "$_sha" "$DOWNLOADDIR/$_filename"
-                        else
-                                if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
-                                        echo "WARNING: No SHA256 provided for $_filename (continuing due to --allow-missing-sha=true)" >&2
-                                else
-                                        echo "ERROR: No SHA256 provided for $_filename" >&2
-                                        exit 10
-                                fi
-                        fi
+                        fetch_verified "$_url" "$DOWNLOADDIR/$_filename" "$_sha"
                 }
                 for_each_boot "$i" _dl_boot
         fi
 
         _dl_cdt() {
                 local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
-                download_if_needed "$_url" "$DOWNLOADDIR/$_filename"
-                if [[ -n "$_sha" && "$_sha" != "null" ]]; then
-                        verify_sha256 "$_sha" "$DOWNLOADDIR/$_filename"
-                else
-                        if [[ "$ALLOW_MISSING_SHA" == "true" ]]; then
-                                echo "WARNING: No SHA256 provided for $_filename (continuing due to --allow-missing-sha=true)" >&2
-                        else
-                                echo "ERROR: No SHA256 provided for $_filename" >&2; exit 10
-                        fi
-                fi
+                fetch_verified "$_url" "$DOWNLOADDIR/$_filename" "$_sha"
         }
         for_each_cdt "$i" _dl_cdt
 done
