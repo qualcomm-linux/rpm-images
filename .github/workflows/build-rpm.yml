@@ -48,6 +48,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Build kernel RPMs
         uses: ./.github/actions/build-kernel-rpm
@@ -161,6 +163,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
