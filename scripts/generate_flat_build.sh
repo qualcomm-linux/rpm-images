@@ -754,13 +754,13 @@ for ((i=0; i<BOARD_COUNT; i++)); do
                         fetch_verified "$_url" "$DOWNLOADDIR/$_filename" "$_sha"
                 }
                 for_each_boot "$i" _dl_boot
-        fi
 
-        _dl_cdt() {
-                local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
-                fetch_verified "$_url" "$DOWNLOADDIR/$_filename" "$_sha"
-        }
-        for_each_cdt "$i" _dl_cdt
+                _dl_cdt() {
+                        local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
+                        fetch_verified "$_url" "$DOWNLOADDIR/$_filename" "$_sha"
+                }
+                for_each_cdt "$i" _dl_cdt
+        fi
 done
 
 DTBS_FILE="${BUILD_DIR}/dtbs.txt"; : >"$DTBS_FILE"
@@ -897,14 +897,16 @@ declare -A BOARD_RESULT BOARD_REASON
 declare -A PLAT_RESULT PLAT_REASON   # key: "board/platform"
 
 for ((i=0; i<BOARD_COUNT; i++)); do
-        _unpack_cdt() {
-                local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
-                local _noext="${_filename%.zip}"
-                if [[ -f "$DOWNLOADDIR/$_filename" ]]; then
-                        unpack_zip_smart "$DOWNLOADDIR/$_filename" "${BUILD_DIR}/cdt_${_noext}"
-                fi
-        }
-        for_each_cdt "$i" _unpack_cdt
+        if grep -Fxq "${BOARD_NAME[i]}" "$TARGETS_FILE"; then
+                _unpack_cdt() {
+                        local _desc="$1" _url="$2" _filename="$3" _sha="$4" _board_file="$5" _dest="$6"
+                        local _noext="${_filename%.zip}"
+                        if [[ -f "$DOWNLOADDIR/$_filename" ]]; then
+                                unpack_zip_smart "$DOWNLOADDIR/$_filename" "${BUILD_DIR}/cdt_${_noext}"
+                        fi
+                }
+                for_each_cdt "$i" _unpack_cdt
+        fi
 done
 
 for ((i=0; i<BOARD_COUNT; i++)); do
