@@ -26,6 +26,7 @@ jobs:
 
   kernel-rpm:
     name: Phase 1 - Kernel RPM
+    if: github.repository_owner == 'qualcomm-linux'
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     outputs:
       manifest_sha256: ${{ steps.stage.outputs.manifest_sha256 }}
@@ -48,6 +49,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Build kernel RPMs
         uses: ./.github/actions/build-kernel-rpm
@@ -92,6 +95,7 @@ jobs:
 
   publish-kernel-rpms:
     name: Publish kernel RPMs to S3
+    if: github.repository_owner == 'qualcomm-linux'
     needs: kernel-rpm
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
@@ -141,6 +145,7 @@ jobs:
 
   build-and-flash:
     name: Phase 2 - Images, extract & flash packages (${{ matrix.image_family }})
+    if: github.repository_owner == 'qualcomm-linux'
     needs: [kernel-rpm]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     # one output per matrix leg: each leg sets only its own key, so the
@@ -161,6 +166,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install host dependencies
         uses: ./.github/actions/install-host-deps
@@ -335,6 +342,7 @@ jobs:
 
   publish-artifacts:
     name: Publish flash packages and SBOMs to S3
+    if: github.repository_owner == 'qualcomm-linux'
     needs: [build-and-flash]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     outputs:
@@ -435,6 +443,7 @@ jobs:
   # Failed or cancelled runs are pruned by age in efs-maintenance.yml.
   cleanup-efs:
     name: Clean up EFS build folder
+    if: github.repository_owner == 'qualcomm-linux'
     needs: [publish-kernel-rpms, publish-artifacts]
     runs-on: [self-hosted, platform-prd-u2404-arm64-large-od-ephem]
     steps:
