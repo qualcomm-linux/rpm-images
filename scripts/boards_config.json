@@ -22,15 +22,15 @@
       "boot_binaries": [
         {
           "description": "QCM6490 boot binaries",
-          "url": "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_00150.zip",
-          "filename": "qcm6490_boot-binaries_00150.zip",
-          "sha256": "f6982fed9eaa546649f53c4aedc960f031123c3b7dac06803dc7dabbff533ee0"
+          "url": "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00152/QCM6490_bootbinaries_00152.zip",
+          "filename": "qcm6490_boot-binaries_00152.zip",
+          "sha256": "4116a6368262edaa58d7a4d79d94099dffa06e1af54d5c0f8f47fec93fc8dc85"
         },
         {
           "description": "QCM6490 boot binaries (immutable)",
-          "url": "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00150/QCM6490_bootbinaries_immutable_00150.zip",
-          "filename": "qcm6490_boot-binaries_immutable_00150.zip",
-          "sha256": "711986b7e8ef86443bdd967c3ca4132b7d3db5ad9b5cfbce71bd09d0079fb7e9"
+          "url": "https://softwarecenter.qualcomm.com/nexus/generic/product/chip/tech-package/QCM6490_bootbinaries.1.0/qcm6490_bootbinaries.1.0-test-device-public/00152/QCM6490_bootbinaries_immutable_00152.zip",
+          "filename": "qcm6490_boot-binaries_immutable_00152.zip",
+          "sha256": "c3311939169d2a83d0c9500007f16c782df8eec8295b3c7a71a9f0a373956ee0"
         }
       ],
       "cdts": [
