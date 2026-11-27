@@ -55,7 +55,7 @@ jobs:
       - name: Build kernel RPMs
         uses: ./.github/actions/build-kernel-rpm
         with:
-          kernel-ref: qcom-6.18.y-20260911
+          kernel-ref: qcom-6.18.y-20261126
 
       - name: Stage kernel artifacts to EFS
         id: stage
