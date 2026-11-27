@@ -200,7 +200,7 @@ trap cleanup EXIT
 export MTOOLS_SKIP_CHECK=1
 
 # ---- Board registry ----------------------------------------------------------
-declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB
+declare -a BOARD_NAME BOARD_PLATFORMS BOARD_DTB BOARD_PTOOL_FLAVOR
 declare -a BOARD_BOOTS
 declare -a BOARD_CDTS
 BOARD_COUNT=0
@@ -209,12 +209,14 @@ add_board() {
         local name="$1" platforms="$2" dtb="$3"
         local boot_list="$4"
         local cdt_list="${5:-}"
+        local ptool_flavor="$6"
 
         BOARD_NAME[BOARD_COUNT]="$name"
         BOARD_PLATFORMS[BOARD_COUNT]="$platforms"
         BOARD_DTB[BOARD_COUNT]="$dtb"
         BOARD_BOOTS[BOARD_COUNT]="$boot_list"
         BOARD_CDTS[BOARD_COUNT]="$cdt_list"
+        BOARD_PTOOL_FLAVOR[BOARD_COUNT]="$ptool_flavor"
 
         ((++BOARD_COUNT))
 }
@@ -254,12 +256,14 @@ board_count=$(jq -r '.boards | length' "$BOARDS_JSON")
 for ((idx=0; idx<board_count; idx++)); do
         name=$(jq -r ".boards[$idx].name" "$BOARDS_JSON")
         platforms=$(jq -r ".boards[$idx].platforms | if type == \"array\" then join(\" \") else . end" "$BOARDS_JSON")
+        ptool_flavor=$(jq -r ".boards[$idx].ptool_flavor // empty" "$BOARDS_JSON")
         dtb=$(jq -r ".boards[$idx].dtb" "$BOARDS_JSON")
         # Validate required fields
 
         [[ "$name" == "null" || -z "$name" ]] && { echo "ERROR: Board at index $idx missing 'name'" >&2; exit 3; }
         [[ "$platforms" == "null" || -z "$platforms" ]] && { echo "ERROR: Board '$name' missing 'platforms'" >&2; exit 3; }
         [[ "$dtb" == "null" || -z "$dtb" ]] && { echo "ERROR: Board '$name' missing 'dtb'" >&2; exit 3; }
+        [[ -n "$ptool_flavor" ]] || { echo "ERROR: Board '$name' missing 'ptool_flavor'" >&2; exit 3; }
 
         # Build boot_list string
         boot_list=""
@@ -296,7 +300,7 @@ for ((idx=0; idx<board_count; idx++)); do
                 cdt_list="${cdt_list}${desc}|${url}|${filename}|${sha}|${board_file}|${dest_name};;"
         done
 
-        add_board "$name" "$platforms" "$dtb" "$boot_list" "$cdt_list"
+        add_board "$name" "$platforms" "$dtb" "$boot_list" "$cdt_list" "$ptool_flavor"
 done
 
 download_if_needed() {
@@ -371,20 +375,68 @@ unpack_zip_smart() {
         rm -rf "$tmpdir"
 }
 
+qcom_ptool_tree_valid() {
+        local dest="$1"
+        local help_output
+
+        [[ -f "$dest/qcom_ptool/gen_partition.py" ]] || {
+                echo "ERROR: qcom-ptool is missing qcom_ptool/gen_partition.py" >&2
+                return 1
+        }
+        [[ -f "$dest/qcom_ptool/ptool.py" ]] || {
+                echo "ERROR: qcom-ptool is missing qcom_ptool/ptool.py" >&2
+                return 1
+        }
+        [[ -d "$dest/platforms/boards" ]] || {
+                echo "ERROR: qcom-ptool is missing platforms/boards" >&2
+                return 1
+        }
+        [[ -d "$dest/platforms/flavors" ]] || {
+                echo "ERROR: qcom-ptool is missing platforms/flavors" >&2
+                return 1
+        }
+
+        help_output="$(PYTHONPATH="$dest" python3 "$dest/qcom_ptool/gen_partition.py" --help 2>&1 || true)"
+        grep -Fq -- '--board <board.yaml>' <<< "$help_output" || {
+                echo "ERROR: qcom-ptool gen_partition does not support --board" >&2
+                return 1
+        }
+        grep -Fq -- '--flavor <flavor.yaml>' <<< "$help_output" || {
+                echo "ERROR: qcom-ptool gen_partition does not support --flavor" >&2
+                return 1
+        }
+
+        return 0
+}
+
 ensure_qcom_ptool() {
         local dest="$DOWNLOADDIR/qcom-ptool"
+        local tmp_dest="${dest}.tmp.$$"
         local sha_file="$dest/.ptool.sha256"
-        mkdir -p "$dest"
         local cur_sha
+
         cur_sha="$(sha256sum "$QCOM_PTOOL_TARBALL" | awk '{print $1}')"
-        if [[ -f "$sha_file" ]] && [[ "$(cat "$sha_file")" == "$cur_sha" ]] && [[ -f "$dest/qcom_ptool/gen_partition.py" ]]; then
+        if [[ -f "$sha_file" ]] && [[ "$(cat "$sha_file")" == "$cur_sha" ]] && qcom_ptool_tree_valid "$dest"; then
                 echo "$dest" # cache valid, reuse
                 return 0
         fi
-        rm -rf "$dest"; mkdir -p "$dest"
-        tar -xzf "$QCOM_PTOOL_TARBALL" --strip-components=1 -C "$dest"
-        [[ -f "$dest/qcom_ptool/gen_partition.py" ]] || { echo "qcom-ptool unpack failed (gen_partition.py missing)" >&2; exit 3; }
-        echo "$cur_sha" > "$sha_file"
+
+        rm -rf "$tmp_dest"
+        mkdir -p "$tmp_dest"
+        if ! tar -xzf "$QCOM_PTOOL_TARBALL" --strip-components=1 -C "$tmp_dest"; then
+                rm -rf "$tmp_dest"
+                echo "ERROR: Failed to extract qcom-ptool archive: $QCOM_PTOOL_TARBALL" >&2
+                exit 3
+        fi
+        if ! qcom_ptool_tree_valid "$tmp_dest"; then
+                rm -rf "$tmp_dest"
+                echo "ERROR: Extracted qcom-ptool tree is incompatible with the required board/flavor interface" >&2
+                exit 3
+        fi
+
+        printf '%s\n' "$cur_sha" > "$tmp_dest/.ptool.sha256"
+        rm -rf "$dest"
+        mv "$tmp_dest" "$dest"
         echo "$dest"  # ONLY return value on stdout
 }
 
@@ -629,55 +681,84 @@ extract_kernel_from_ext4_image() {
         return 1
 }
 
-# Generate ptool outputs for a platform using gen_partition.py -m partition map.
-# This matches the approach used by qcom-deb-images/scripts/gen-ptool.sh.
-generate_ptool_from_platform() {
-        local platform_dir="$1" qcom_ptool="$2"
-        local esp_basename="${3:-}" rootfs_basename="${4:-}" dtb_basename="${5:-}"
-        local conf="${qcom_ptool}/platforms/${platform_dir}/partitions.conf"
-        local contents="${qcom_ptool}/platforms/${platform_dir}/contents.xml.in"
-        log_debug "conf=$conf"
-        log_debug "contents=$contents"
-        [[ -f "$conf" ]] || { echo "Missing partitions.conf: $conf" >&2; exit 4; }
+# Generate ptool outputs from the qcom-ptool board/flavor YAML model.
+generate_ptool_from_board() {
+        local board_name="$1" flavor_name="$2" qcom_ptool="$3"
+        local esp_basename="${4:-}" rootfs_basename="${5:-}" dtb_basename="${6:-}"
+        local board_file="${qcom_ptool}/platforms/boards/${board_name}.yaml"
+        local flavor_file="${qcom_ptool}/platforms/flavors/${flavor_name}.yaml"
+        local out_root="${BUILD_DIR}/ptool/${board_name}"
+        local partition_map=""
+        local partitions_xml out_dir storage_id
+        local -a gen_args partition_outputs
 
-        mkdir -p "${BUILD_DIR}/ptool/${platform_dir}"
-        pushd "${BUILD_DIR}/ptool/${platform_dir}" >/dev/null
+        [[ -f "$board_file" ]] || {
+                echo "ERROR: Missing qcom-ptool board definition: $board_file" >&2
+                exit 4
+        }
+        [[ -f "$flavor_file" ]] || {
+                echo "ERROR: Missing qcom-ptool flavor definition: $flavor_file" >&2
+                exit 4
+        }
 
+        [[ -n "$esp_basename" ]] && esp_basename="$(basename "$esp_basename")"
+        [[ -n "$rootfs_basename" ]] && rootfs_basename="$(basename "$rootfs_basename")"
         [[ -n "$dtb_basename" ]] && dtb_basename="$(basename "$dtb_basename")"
 
-        # Extract disk type from partitions.conf --disk line
-        local disk_type
-        disk_type="$(sed -n 's/.*--type=\([^ ]*\).*/\1/p' "$conf" | head -n1)"
-        [[ -n "$disk_type" ]] || { echo "Could not parse disk type from: $conf" >&2; exit 5; }
-
-        local esp_ref="" rootfs_ref=""
-        case "$disk_type" in
-                emmc|nvme) esp_ref="../disk-sdcard.img1"; rootfs_ref="../disk-sdcard.img2" ;;
-                ufs)       esp_ref="../disk-ufs.img1";    rootfs_ref="../disk-ufs.img2" ;;
-                *) echo "Unsupported disk type: $disk_type (platform: $platform_dir)" >&2; exit 6 ;;
-        esac
-        [[ -n "$esp_basename"    ]] && esp_ref="$esp_basename"
-        [[ -n "$rootfs_basename" ]] && rootfs_ref="$rootfs_basename"
-
-        echo "$disk_type" > disk_type
-        dbg "[ptool:$platform_dir] disk_type=$disk_type esp_ref=$esp_ref rootfs_ref=$rootfs_ref"
-
-        local partition_map=""
         [[ -n "$dtb_basename" ]] && partition_map="${partition_map:+${partition_map},}dtb_a=${dtb_basename},dtb_b=${dtb_basename}"
-        [[ -n "$esp_ref"      ]] && partition_map="${partition_map:+${partition_map},}efi=${esp_ref}"
-        [[ -n "$rootfs_ref"   ]] && partition_map="${partition_map:+${partition_map},}rootfs=${rootfs_ref}"
+        [[ -n "$esp_basename" ]] && partition_map="${partition_map:+${partition_map},}efi=${esp_basename}"
+        [[ -n "$rootfs_basename" ]] && partition_map="${partition_map:+${partition_map},}rootfs=${rootfs_basename}"
 
-        dbg "[ptool:$platform_dir] partition_map=${partition_map:-<empty>}"
+        [[ "$VERBOSE" == "true" ]] && {
+                echo "[ptool:$board_name] board=$board_file" >&2
+                echo "[ptool:$board_name] flavor=$flavor_file" >&2
+                echo "[ptool:$board_name] partition_map=${partition_map:-<upstream-defaults>}" >&2
+        }
 
-        python3 "${qcom_ptool}/qcom_ptool/gen_partition.py" -i "$conf" -o partitions.xml \
-                ${partition_map:+-m "$partition_map"}
-        [[ -e "$contents" ]] && python3 "${qcom_ptool}/qcom_ptool/gen_contents.py" \
-                -p partitions.xml -t "$contents" -o contents.xml
-        PYTHONPATH="${qcom_ptool}" python3 -m qcom_ptool.ptool -x partitions.xml
+        rm -rf "$out_root"
+        mkdir -p "$out_root"
+        gen_args=(--board "$board_file" --flavor "$flavor_file" -C "$out_root")
+        [[ -n "$partition_map" ]] && gen_args+=(-m "$partition_map")
 
+        PYTHONPATH="$qcom_ptool" python3 "${qcom_ptool}/qcom_ptool/gen_partition.py" "${gen_args[@]}" >&2 || {
+                echo "ERROR: qcom-ptool gen_partition failed for $board_name" >&2
+                exit 5
+        }
+
+        mapfile -d '' -t partition_outputs < <(find "$out_root" -type f -name partitions.xml -print0)
+        if (( ${#partition_outputs[@]} != 1 )); then
+                echo "ERROR: qcom-ptool board '$board_name' generated ${#partition_outputs[@]} partition layouts; rpm-images currently requires exactly one" >&2
+                printf '  %s\n' "${partition_outputs[@]}" >&2
+                exit 5
+        fi
+
+        partitions_xml="${partition_outputs[0]}"
+        out_dir="$(dirname "$partitions_xml")"
+        storage_id="$(basename "$out_dir")"
+        [[ -n "$storage_id" && "$storage_id" != "." && "$storage_id" != "/" ]] || {
+                echo "ERROR: Unable to determine storage ID from qcom-ptool output: $partitions_xml" >&2
+                exit 5
+        }
+
+        pushd "$out_dir" >/dev/null
+        PYTHONPATH="$qcom_ptool" python3 -m qcom_ptool.ptool -x partitions.xml >&2 || {
+                popd >/dev/null
+                echo "ERROR: qcom-ptool GPT generation failed for $board_name/$storage_id" >&2
+                exit 5
+        }
         popd >/dev/null
-}
 
+        compgen -G "$out_dir/rawprogram*.xml" >/dev/null || {
+                echo "ERROR: No rawprogram XML generated for $board_name/$storage_id" >&2
+                exit 5
+        }
+        compgen -G "$out_dir/patch*.xml" >/dev/null || {
+                echo "ERROR: No patch XML generated for $board_name/$storage_id" >&2
+                exit 5
+        }
+
+        printf '%s|%s\n' "$storage_id" "$out_dir"
+}
 # Build targets file from --target-boards (all or CSV)
 build_targets_set() {
         local targets_file="$1"; rm -f "$targets_file"; mkdir -p "$(dirname "$targets_file")"
@@ -910,6 +991,7 @@ done
 for ((i=0; i<BOARD_COUNT; i++)); do
     name="${BOARD_NAME[i]}"
     platforms="${BOARD_PLATFORMS[i]}"
+    ptool_flavor="${BOARD_PTOOL_FLAVOR[i]}"
     dtb="${BOARD_DTB[i]}"
 
 
@@ -936,10 +1018,9 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         BOARD_RESULT["$name"]="SKIPPED"
         BOARD_REASON["$name"]="not in targets"
 
-        for platform in $platforms; do
+        platform="$platforms"
             PLAT_RESULT["$name/$platform"]="SKIPPED"
             PLAT_REASON["$name/$platform"]="board not targeted"
-        done
         continue
     fi
 
@@ -955,24 +1036,23 @@ for ((i=0; i<BOARD_COUNT; i++)); do
     }
     for_each_boot "$i" _unpack_boot
 
-    for platform in $platforms; do
+    platform="$platforms"
+    {
         esp_base=""
         rootfs_base=""
 
         [[ -n "$ESP_VFAT"    ]] && esp_base="$(basename "$ESP_VFAT")"
         [[ -n "$ROOTFS_EXT4" ]] && rootfs_base="$(basename "$ROOTFS_EXT4")"
 
-        mkdir -p "${BUILD_DIR}/ptool/${platform}"
-        # Stage dtb.bin for ptool only when FIT image is available;
-        # in single-DTB fallback mode dtb.bin is written directly into flash_dir later.
+        # qcom-ptool resolves the board's flavor and storage layout from its
+        # upstream board definition. rpm-images does not duplicate that schema.
         dtb_filename=""
         if [[ -n "$DTB_BIN_SRC" ]]; then
-            cp --preserve=mode,timestamps -v "$DTB_BIN_SRC" "${BUILD_DIR}/ptool/${platform}/dtb.bin"
             dtb_filename="dtb.bin"
         fi
 
-        dbg "  -> Platform build"
-        dbg "     platform                  : $platform"
+        dbg "  -> Ptool board build"
+        dbg "     board                     : $name"
         dbg "     dtb_filename              : ${dtb_filename:-<single-dtb-fallback>}"
         dbg "     ESP_VFAT                  : ${ESP_VFAT:-<none>}"
         dbg "     esp_base                  : ${esp_base:-<none>}"
@@ -980,28 +1060,29 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         dbg "     rootfs_base               : ${rootfs_base:-<none>}"
         dbg "     QCOM_PTOOL_DIR            : ${QCOM_PTOOL_DIR:-<none>}"
 
-        # Generate ptool layout ONCE per platform
-        generate_ptool_from_platform \
-            "$platform" \
+        ptool_result="$(generate_ptool_from_board \
+            "$name" \
+            "$ptool_flavor" \
             "$QCOM_PTOOL_DIR" \
             "$esp_base" \
             "$rootfs_base" \
-            "$dtb_filename"
-
-        disk_type="$(cat "${BUILD_DIR}/ptool/${platform}/disk_type")"
+            "$dtb_filename")"
+        IFS='|' read -r disk_type ptool_output <<< "$ptool_result"
+        [[ -n "$disk_type" && -n "$ptool_output" && -d "$ptool_output" ]] || {
+            echo "ERROR: Invalid qcom-ptool result for $name: ${ptool_result:-<empty>}" >&2
+            exit 5
+        }
         flash_dir="${ARTIFACTDIR}/${FLASH_DIR_PREFIX}flash_${name}_${disk_type}"
         rm -rf "$flash_dir"
         mkdir -p "$flash_dir"
-
-        cp -a "${BUILD_DIR}/ptool/${platform}/." "$flash_dir/"
-
+        cp -a "${ptool_output}/." "$flash_dir/"
         rm -f \
             "$flash_dir"/rawprogram*_BLANK_GPT.xml \
             "$flash_dir"/rawprogram*_WIPE_PARTITIONS.xml \
             "$flash_dir"/wipe_rawprogram_PHY*.xml \
             "$flash_dir"/gpt_empty*.bin \
-            "$flash_dir"/partitions* \
-            "$flash_dir"/disk_type 2>/dev/null || true
+            "$flash_dir"/partitions* 2>/dev/null || true
+
         _copy_boot() {
                 local _desc="$1" _url="$2" _filename="$3" _sha="$4"
                 local _noext="${_filename%.zip}"
@@ -1097,7 +1178,7 @@ for ((i=0; i<BOARD_COUNT; i++)); do
         PLAT_REASON["$name/$platform"]="ok (${disk_type}; kvm_config=${KVM_CONFIG})"
         BOARD_RESULT["$name"]="BUILT"
         BOARD_REASON["$name"]="ok"
-    done
+    }
 done
 
 echo
@@ -1105,12 +1186,11 @@ echo "==========================================================================
 echo "Build summary (per platform):"
 for ((i=0; i<BOARD_COUNT; i++)); do
         name="${BOARD_NAME[i]}"
-        for platform in ${BOARD_PLATFORMS[i]}; do
+        platform="${BOARD_PLATFORMS[i]}"
                 key="$name/$platform"
                 printf "  - %-28s | %-18s : %-8s" "$name" "$platform" "${PLAT_RESULT[$key]:-SKIPPED}"
                 [[ -n "${PLAT_REASON[$key]:-}" ]] && printf "  (%s)" "${PLAT_REASON[$key]}"
                 echo
-        done
 done
 
 echo

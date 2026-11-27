@@ -18,6 +18,7 @@
     {
       "name": "qcs6490-rb3gen2",
       "platforms": ["qcs6490-rb3gen2/ufs"],
+      "ptool_flavor": "kodiak-ufs",
       "dtb": "qcom/qcs6490-rb3gen2.dtb",
       "boot_binaries": [
         {
